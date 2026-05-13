@@ -1,0 +1,34 @@
+-- ============================================================
+-- Schedule rotate-divisions via Supabase Dashboard Cron
+-- ============================================================
+-- DO NOT store the service role key in SQL.
+-- Instead, set up the cron job through the Supabase Dashboard:
+--
+--   Dashboard → Integrations → Cron → Create a new cron job
+--   Name:     rotate-divisions-hourly
+--   Schedule: 0 * * * *   (every hour)
+--   Function: rotate-divisions
+--
+-- Supabase injects the service role key automatically when
+-- calling an Edge Function from a Dashboard cron job.
+-- ============================================================
+
+-- If you prefer SQL via pg_cron + pg_net (advanced), use Vault
+-- to store the service key and reference it here:
+--
+-- select vault.create_secret('your_service_key', 'service_role_key');
+--
+-- select cron.schedule(
+--   'rotate-divisions-hourly',
+--   '0 * * * *',
+--   $$
+--   select net.http_post(
+--     url     := 'https://ppdgdwfiwgwifzykkngr.supabase.co/functions/v1/rotate-divisions',
+--     body    := '{}'::jsonb,
+--     headers := jsonb_build_object(
+--       'Content-Type',  'application/json',
+--       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key')
+--     )
+--   )
+--   $$
+-- );
