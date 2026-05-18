@@ -79,6 +79,9 @@ export async function scheduleRotationNotifications(
   await Promise.all(rotationIds.map((id) => Notifications.cancelScheduledNotificationAsync(id)));
 
   const now = Date.now();
+  // Fire 8 minutes after rotation: curate-scheduler fires at minute 0 or 5,
+  // curation + inline image generation completes within ~45s, leaving margin to spare.
+  const CURATION_BUFFER_MS = 8 * 60 * 1000;
 
   await Promise.all(
     rotationTimes
@@ -95,7 +98,7 @@ export async function scheduleRotationNotifications(
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
-            date: new Date(rotatesAt),
+            date: new Date(rotatesAt + CURATION_BUFFER_MS),
           },
         });
       })

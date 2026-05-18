@@ -17,11 +17,12 @@ const BRACKET_SIZE        = 8       // minimum recipes needed to play a division
 const ANCHOR_WINDOW_SIZE  = 40      // recipes shown per anchor epoch
 const MAX_BANK_SIZE       = 250     // mirrors curate-division-recipes
 
+// Lobby order per spec: R1=1, A1=2, R2=3, A2=4, R3=5, A3=6, R4=7, A4=8
 const SLOTS = [
-  { key: 'r1', intervalSec: 259200, category: 'cuisine',  displayBase: 5  },
-  { key: 'r2', intervalSec: 604800, category: 'seasonal', displayBase: 10 },
-  { key: 'r3', intervalSec: 432000, category: 'wildcard', displayBase: 15 },
-  { key: 'r4', intervalSec: 345600, category: 'dessert',  displayBase: 20 },
+  { key: 'r1', intervalSec: 259200, category: 'cuisine',  displayBase: 1 },
+  { key: 'r2', intervalSec: 604800, category: 'seasonal', displayBase: 3 },
+  { key: 'r3', intervalSec: 432000, category: 'wildcard', displayBase: 5 },
+  { key: 'r4', intervalSec: 345600, category: 'dessert',  displayBase: 7 },
 ] as const
 
 // ── Epoch helpers ─────────────────────────────────────────────────────────────
@@ -56,7 +57,6 @@ async function updateAppConfig(
 
 // ── Bank helpers ──────────────────────────────────────────────────────────────
 
-// Fetches all recipe_ids for a catalog entry in rotation order.
 async function getBankRecipeIds(
   supabase: ReturnType<typeof createClient>,
   catalogId: string
@@ -77,10 +77,13 @@ async function selectDivisionForSlot(
   epoch: number,
   currentMonth: number
 ): Promise<{ id: string; slug: string; name: string; cover_image_url: string | null } | null> {
+  // ORDER BY display_order ensures deterministic pool ordering — the same epoch always
+  // picks the same division regardless of Postgres row storage order.
   const { data: pool } = await supabase
     .from('division_catalog')
     .select('id, slug, name, active_months, cover_image_url')
     .eq('category', category)
+    .order('display_order', { ascending: true })
 
   if (!pool?.length) return null
 
@@ -101,7 +104,7 @@ async function rotateSlot(
   slot: typeof SLOTS[number],
   epoch: number,
   currentMonth: number
-): Promise<{ slug: string; needsCuration: boolean } | null> {
+): Promise<{ slug: string } | null> {
   const entry = await selectDivisionForSlot(supabase, slot.category, epoch, currentMonth)
   if (!entry) {
     console.error(`No eligible entry for slot ${slot.key} (category: ${slot.category})`)
@@ -115,29 +118,29 @@ async function rotateSlot(
     .eq('division_type', 'rotating')
     .eq('catalog_id', await getActiveSlotCatalogId(supabase, slot.key))
 
-  // Fetch the full bank for this division to populate the active slot
   const recipeIds = await getBankRecipeIds(supabase, entry.id)
 
   await supabase.from('plateoffs_divisions').upsert(
     {
-      name:            entry.name,
-      slug:            entry.slug,
-      category:        slot.category,
-      catalog_id:      entry.id,
-      division_type:   'rotating',
-      is_active:       true,
-      display_order:   slot.displayBase,
-      recipe_ids:      recipeIds,
-      cover_image_url: entry.cover_image_url ?? null,
-      active_from:     new Date().toISOString(),
-      active_until:    nextRotationAt(epoch, slot.intervalSec),
+      name:             entry.name,
+      slug:             entry.slug,
+      category:         slot.category,
+      catalog_id:       entry.id,
+      division_type:    'rotating',
+      is_active:        true,
+      display_order:    slot.displayBase,
+      recipe_ids:       recipeIds,
+      cover_image_url:  entry.cover_image_url ?? null,
+      active_from:      new Date().toISOString(),
+      active_until:     nextRotationAt(epoch, slot.intervalSec),
+      // Mark for curation if bank still has room to grow
+      curation_pending: recipeIds.length < MAX_BANK_SIZE,
     },
     { onConflict: 'slug' }
   )
 
-  const needsCuration = recipeIds.length < BRACKET_SIZE
-  console.log(`[${slot.key}] Activated: ${entry.slug} (bank: ${recipeIds.length}, needs curation: ${needsCuration})`)
-  return { slug: entry.slug, needsCuration }
+  console.log(`[${slot.key}] Activated: ${entry.slug} (bank: ${recipeIds.length}, curation_pending: ${recipeIds.length < MAX_BANK_SIZE})`)
+  return { slug: entry.slug }
 }
 
 async function getActiveSlotCatalogId(
@@ -157,27 +160,23 @@ async function getActiveSlotCatalogId(
 
 // ── Anchor window rotation ────────────────────────────────────────────────────
 
-// Each epoch, advance rotation_index by ANCHOR_WINDOW_SIZE through the bank,
-// write the new window to plateoffs_divisions, and persist the updated index.
 async function refreshAnchorWindows(
   supabase: ReturnType<typeof createClient>
-): Promise<{ slugs: string[]; needsCuration: string[] }> {
+): Promise<{ slugs: string[] }> {
   const { data: anchors } = await supabase
     .from('plateoffs_divisions')
     .select('slug, catalog_id')
     .eq('division_type', 'anchor')
     .eq('is_active', true)
 
-  if (!anchors?.length) return { slugs: [], needsCuration: [] }
+  if (!anchors?.length) return { slugs: [] }
 
   const slugs: string[] = []
-  const needsCuration: string[] = []
 
   await Promise.all(
     anchors.map(async (anchor: { slug: string; catalog_id: string }) => {
       slugs.push(anchor.slug)
 
-      // Load bank in rotation order and current index together
       const [bank, catalogData] = await Promise.all([
         getBankRecipeIds(supabase, anchor.catalog_id),
         supabase
@@ -189,8 +188,11 @@ async function refreshAnchorWindows(
       ])
 
       if (bank.length === 0) {
-        // Bank empty — curation will fill it and sync plateoffs_divisions
-        needsCuration.push(anchor.slug)
+        // Bank empty — flag for curation; curate will sync recipe_ids when done
+        await supabase
+          .from('plateoffs_divisions')
+          .update({ curation_pending: true })
+          .eq('slug', anchor.slug)
         return
       }
 
@@ -198,7 +200,6 @@ async function refreshAnchorWindows(
       const windowSize = Math.min(ANCHOR_WINDOW_SIZE, bank.length)
       const nextIndex = (currentIndex + windowSize) % bank.length
 
-      // Slice the window, wrapping around the end of the bank
       const window: string[] = Array.from(
         { length: windowSize },
         (_, i) => bank[(currentIndex + i) % bank.length]
@@ -211,60 +212,49 @@ async function refreshAnchorWindows(
           .eq('id', anchor.catalog_id),
         supabase
           .from('plateoffs_divisions')
-          .update({ recipe_ids: window })
+          .update({
+            recipe_ids:       window,
+            // Flag for growth if bank hasn't reached the cap
+            curation_pending: bank.length < MAX_BANK_SIZE,
+          })
           .eq('slug', anchor.slug),
       ])
 
       console.log(
         `[anchor] ${anchor.slug}: index ${currentIndex}→${nextIndex}, ` +
-        `window size ${windowSize}, bank size ${bank.length}`
+        `window ${windowSize}, bank ${bank.length}, curation_pending: ${bank.length < MAX_BANK_SIZE}`
       )
-
-      // Keep growing until capped
-      if (bank.length < MAX_BANK_SIZE) needsCuration.push(anchor.slug)
     })
   )
 
-  return { slugs, needsCuration }
+  return { slugs }
 }
 
-// ── Incomplete division check ─────────────────────────────────────────────────
+// ── Incomplete division safety net ────────────────────────────────────────────
 
-async function findIncompleteDivisions(
+// Flags any active division that is below the minimum playable threshold.
+// curate-scheduler will pick these up within 5 minutes.
+async function markIncompleteDivisions(
   supabase: ReturnType<typeof createClient>
-): Promise<string[]> {
+): Promise<number> {
   const { data } = await supabase
     .from('plateoffs_divisions')
     .select('slug, recipe_ids')
     .eq('is_active', true)
 
-  return (data ?? [])
-    .filter((d: { recipe_ids: string[] | null }) =>
-      !d.recipe_ids || d.recipe_ids.length < BRACKET_SIZE
-    )
-    .map((d: { slug: string }) => d.slug)
-}
-
-// ── Curation trigger ──────────────────────────────────────────────────────────
-
-async function triggerCuration(slug: string): Promise<void> {
-  const res = await fetch(
-    `${SUPABASE_URL}/functions/v1/curate-division-recipes`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        apikey: SUPABASE_SERVICE_KEY,
-      },
-      body: JSON.stringify({ slug }),
-    }
+  const incomplete = (data ?? []).filter(
+    (d: { recipe_ids: string[] | null }) => !d.recipe_ids || d.recipe_ids.length < BRACKET_SIZE
   )
-  if (!res.ok) {
-    console.error(`Curation failed for ${slug}: ${res.status} ${await res.text()}`)
-  } else {
-    console.log(`Curation triggered for: ${slug}`)
-  }
+
+  if (incomplete.length === 0) return 0
+
+  await supabase
+    .from('plateoffs_divisions')
+    .update({ curation_pending: true })
+    .in('slug', incomplete.map((d: { slug: string }) => d.slug))
+
+  console.log(`Marked ${incomplete.length} incomplete division(s) for curation: ${incomplete.map((d: { slug: string }) => d.slug).join(', ')}`)
+  return incomplete.length
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
@@ -280,7 +270,7 @@ Deno.serve(async (req) => {
     const currentMonth = new Date().getMonth() + 1
     const configUpdates: { key: string; value: string }[] = []
     const activated: string[] = []
-    const curationSlugs: string[] = []
+    let pendingCount = 0
 
     for (const slot of SLOTS) {
       const epoch = currentEpoch(slot.intervalSec)
@@ -291,7 +281,7 @@ Deno.serve(async (req) => {
         const result = await rotateSlot(supabase, slot, epoch, currentMonth)
         if (result) {
           activated.push(result.slug)
-          if (result.needsCuration) curationSlugs.push(result.slug)
+          pendingCount++
         }
         configUpdates.push(
           { key: `${slot.key}_epoch`,            value: String(epoch) },
@@ -307,8 +297,7 @@ Deno.serve(async (req) => {
 
     if (anchorEpoch > storedAnchorEpoch) {
       console.log(`Anchor epoch advanced: ${storedAnchorEpoch} → ${anchorEpoch}`)
-      const { needsCuration: anchorCuration } = await refreshAnchorWindows(supabase)
-      curationSlugs.push(...anchorCuration)
+      await refreshAnchorWindows(supabase)
       configUpdates.push(
         { key: 'anchor_epoch',            value: String(anchorEpoch) },
         { key: 'next_anchor_rotation_at', value: nextRotationAt(anchorEpoch, ANCHOR_INTERVAL_SEC) }
@@ -319,18 +308,17 @@ Deno.serve(async (req) => {
 
     if (configUpdates.length) await updateAppConfig(supabase, configUpdates)
 
-    // Retry active divisions still below the playable threshold
-    const incompleteSlugs = await findIncompleteDivisions(supabase)
-    for (const slug of incompleteSlugs) {
-      if (!curationSlugs.includes(slug)) curationSlugs.push(slug)
-    }
-
-    for (const slug of curationSlugs) {
-      triggerCuration(slug).catch(err => console.error(`Curation error for ${slug}:`, err))
-    }
+    // Safety net: flag any active division still below playable threshold
+    const incompleteCount = await markIncompleteDivisions(supabase)
+    pendingCount += incompleteCount
 
     return new Response(
-      JSON.stringify({ ok: true, activated, curationTriggered: curationSlugs, slotsChecked: SLOTS.length + 1 }),
+      JSON.stringify({
+        ok: true,
+        activated,
+        curationPendingSet: pendingCount,
+        slotsChecked: SLOTS.length + 1,
+      }),
       { headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   } catch (err) {

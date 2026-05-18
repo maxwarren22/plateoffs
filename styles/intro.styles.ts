@@ -21,7 +21,7 @@ export const s = StyleSheet.create({
     textShadowColor: '#000', textShadowOffset: { width: 4, height: 4 }, textShadowRadius: 0,
   },
 
-  titleContainer: { alignItems: 'center', marginBottom: 28 },
+  titleContainer: { alignItems: 'center', marginBottom: IS_TABLET ? 28 : 20 },
   title: {
     fontWeight: '900', fontSize: titleFontSize, color: C.primary,
     lineHeight: Math.floor(titleFontSize * 0.95), textAlign: 'center', fontStyle: 'italic',
@@ -53,15 +53,15 @@ export const s = StyleSheet.create({
 
   stickers: {
     flexDirection: 'row', justifyContent: 'space-between',
-    width: '100%', marginTop: IS_TABLET ? 60 : 40,
+    width: '100%', marginTop: IS_TABLET ? 60 : 32,
   },
   polaroid: {
-    width: IS_TABLET ? 220 : LAYOUT_WIDTH * 0.27,
+    width: IS_TABLET ? 220 : LAYOUT_WIDTH * 0.44,
     padding: IS_TABLET ? 10 : 7, paddingBottom: IS_TABLET ? 28 : 22,
     borderWidth: 3, borderColor: '#000',
     shadowColor: '#000', shadowOffset: { width: 4, height: 4 }, shadowOpacity: 1, shadowRadius: 0,
     elevation: 4,
   },
-  polaroidImg: { width: '100%', height: IS_TABLET ? 170 : 110, backgroundColor: '#000' },
+  polaroidImg: { width: '100%', height: IS_TABLET ? 170 : 130, backgroundColor: '#000' },
   polaroidText: { fontWeight: '700', fontSize: IS_TABLET ? 13 : 11, color: '#000', marginTop: 10, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 1 },
 });

@@ -74,16 +74,18 @@ export default function MatchupScreen() {
         </View>
 
         {/* ── Top fight-card banner ── */}
-        <View style={s.fightBanner} pointerEvents="none">
-          <View style={s.fightBannerStripes}>
-            {Array.from({ length: 18 }).map((_, i) => (
-              <View key={i} style={[s.fightStripe, { backgroundColor: i % 2 === 0 ? '#0a0502' : 'rgba(240,184,75,0.35)' }]} />
-            ))}
+        {IS_TABLET && (
+          <View style={s.fightBanner} pointerEvents="none">
+            <View style={s.fightBannerStripes}>
+              {Array.from({ length: 18 }).map((_, i) => (
+                <View key={i} style={[s.fightStripe, { backgroundColor: i % 2 === 0 ? '#0a0502' : 'rgba(240,184,75,0.35)' }]} />
+              ))}
+            </View>
+            <View style={s.fightBannerInner}>
+              <Text style={s.fightBannerLabel}>TONIGHT'S MAIN EVENT</Text>
+            </View>
           </View>
-          <View style={s.fightBannerInner}>
-            <Text style={s.fightBannerLabel}>TONIGHT'S MAIN EVENT</Text>
-          </View>
-        </View>
+        )}
 
         {/* ── Tablet-only arena stats strip ── */}
         {IS_TABLET && (
@@ -192,11 +194,13 @@ function RecipeCard({
   );
 
   return (
-    <View style={[s.cardOuter, IS_TABLET && { flex: 1 }]}>
-      {/* Label badge above card */}
-      <View style={[s.cardLabelBadge, { backgroundColor: accent }, imageRight && s.cardLabelBadgeRight]}>
-        <Text style={s.cardLabelText}>{label}</Text>
-      </View>
+    <View style={[s.cardOuter, { flex: 1 }]}>
+      {/* Label badge above card — tablet only (on mobile it falls into the VS zone) */}
+      {IS_TABLET && (
+        <View style={[s.cardLabelBadge, { backgroundColor: accent }, imageRight && s.cardLabelBadgeRight]}>
+          <Text style={s.cardLabelText}>{label}</Text>
+        </View>
+      )}
 
       {/* Card + corner brackets */}
       <View style={s.cardBracketWrap}>
@@ -265,7 +269,7 @@ const s = StyleSheet.create({
     alignItems: IS_TABLET ? 'center' : 'stretch',
     justifyContent: 'center',
     paddingHorizontal: IS_TABLET ? 20 : 12,
-    paddingVertical: IS_TABLET ? 20 : 20,
+    paddingVertical: IS_TABLET ? 20 : 12,
     gap: IS_TABLET ? 16 : 0,
   },
 
@@ -282,7 +286,7 @@ const s = StyleSheet.create({
   cardLabelBadgeRight: { alignSelf: 'flex-end' },
   cardLabelText: { fontSize: 11, fontWeight: '900', color: '#000', letterSpacing: 2 },
 
-  cardBracketWrap: { position: 'relative' },
+  cardBracketWrap: { position: 'relative', flex: IS_TABLET ? undefined : 1 },
   bracketTL: {
     position: 'absolute', top: -10, left: -10, zIndex: 20,
     width: 26, height: 26,
@@ -309,7 +313,8 @@ const s = StyleSheet.create({
   },
 
   card: {
-    height: IS_TABLET ? 360 : 250,
+    height: IS_TABLET ? 360 : undefined,
+    flex: IS_TABLET ? undefined : 1,
     flexDirection: 'row',
     backgroundColor: C.surfaceContainerHigh,
     borderWidth: 6,
@@ -341,20 +346,20 @@ const s = StyleSheet.create({
 
   vsRow: {
     alignSelf: 'center',
-    marginVertical: IS_TABLET ? 0 : -48,
+    marginVertical: IS_TABLET ? 0 : -40,
     zIndex: 10,
     flexDirection: 'row',
     alignItems: 'center', justifyContent: 'center',
     gap: IS_TABLET ? 16 : 8,
   },
   vsFlankText: {
-    fontSize: IS_TABLET ? 28 : 20,
+    fontSize: IS_TABLET ? 28 : 18,
     color: 'rgba(255,255,255,0.35)',
   },
   vsBadge: {
-    width: IS_TABLET ? 160 : 130,
-    height: IS_TABLET ? 160 : 130,
-    borderRadius: IS_TABLET ? 80 : 65,
+    width: IS_TABLET ? 160 : 100,
+    height: IS_TABLET ? 160 : 100,
+    borderRadius: IS_TABLET ? 80 : 50,
     backgroundColor: 'rgba(10,5,4,0.88)',
     borderWidth: 6, borderColor: '#555',
     alignItems: 'center', justifyContent: 'center',
@@ -364,9 +369,9 @@ const s = StyleSheet.create({
     shadowRadius: 0,
     elevation: 10,
   },
-  vsText: { fontWeight: '900', fontSize: IS_TABLET ? 64 : 52, color: '#fff', fontStyle: 'italic' },
+  vsText: { fontWeight: '900', fontSize: IS_TABLET ? 64 : 40, color: '#fff', fontStyle: 'italic' },
 
-  footer: { paddingHorizontal: 24, paddingBottom: 24, alignItems: 'center', gap: 16 },
+  footer: { paddingHorizontal: 24, paddingTop: IS_TABLET ? 0 : 8, paddingBottom: IS_TABLET ? 24 : 12, alignItems: 'center', gap: IS_TABLET ? 16 : 10 },
   tapHint: { fontSize: 13, fontWeight: '900', color: C.onSurfaceVariant, letterSpacing: 1 },
   backLink: { fontSize: 12, fontWeight: '900', color: C.onSurfaceVariant, letterSpacing: 1 },
 

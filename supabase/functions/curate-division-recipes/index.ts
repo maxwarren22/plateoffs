@@ -1,4 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { GoogleGenAI } from 'npm:@google/genai@1.11.0'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -6,15 +7,15 @@ const GEMINI_API_KEY       = Deno.env.get('GEMINI_API_KEY')!
 const SUPABASE_URL         = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
-const TEXT_MODEL  = 'gemini-2.5-flash'
+const GEMINI_BASE  = 'https://generativelanguage.googleapis.com/v1beta'
+const TEXT_MODEL   = 'gemini-2.5-flash'
+const IMAGE_MODEL  = 'gemini-2.5-flash-image'
+const IMAGE_BUCKET = 'recipe-images'
 
-// Once a division bank reaches MAX_BANK_SIZE rows in division_recipe_bank,
-// curation stops permanently — the window just rotates through what's there.
-const MAX_BANK_SIZE      = 250
-const INITIAL_BANK_TARGET = 40   // fill to this on the very first run
-const GROWTH_BATCH        = 10   // recipes added per subsequent call
-const RESOLVE_BATCH_SIZE  = 20   // parallel within each batch — larger is fine now
+const MAX_BANK_SIZE       = 250
+const INITIAL_BANK_TARGET = 40
+const GROWTH_BATCH        = 10
+const RESOLVE_BATCH_SIZE  = 20
 
 const MIN_PER_PROFILE = 8
 
@@ -25,6 +26,16 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
+
+const IMAGE_BACKGROUNDS = [
+  'rustic wooden table with fresh herbs scattered around, top-down view',
+  'white marble surface with linen napkin and silver fork, top-down view',
+  'dark slate surface with colorful fresh ingredients around the dish, top-down view',
+  'light wood cutting board with fresh ingredients at the edges, top-down view',
+  'terracotta tiles with olive oil and fresh vegetables nearby, 45-degree angle',
+  'black cast iron on worn oak table, moody side-lit, 45-degree angle',
+  'bright white ceramic plate on linen tablecloth, natural window light, side angle',
+]
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -74,6 +85,50 @@ async function geminiJSON(prompt: string): Promise<unknown> {
   const json = await res.json()
   const text = json.candidates?.[0]?.content?.parts?.[0]?.text ?? '[]'
   return JSON.parse(text)
+}
+
+// ── Gemini: image generation ──────────────────────────────────────────────────
+
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+
+function buildImagePrompt(recipeName: string): string {
+  const bg = IMAGE_BACKGROUNDS[Math.floor(Math.random() * IMAGE_BACKGROUNDS.length)]
+  return `Professional food photography of ${recipeName}. ${bg}. Natural light. Garnished and plated for a high-end restaurant menu. Photorealistic, high resolution, appetizing, vibrant colors.`
+}
+
+async function geminiImage(recipeName: string): Promise<Uint8Array | null> {
+  try {
+    const response = await ai.models.generateContent({
+      model: IMAGE_MODEL,
+      contents: buildImagePrompt(recipeName),
+      config: {
+        responseModalities: ['IMAGE'],
+        imageConfig: { aspectRatio: '1:1' },
+      },
+    })
+    const part = response.candidates?.[0]?.content?.parts?.[0]
+    if (!part?.inlineData?.data) return null
+    return Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0))
+  } catch (err) {
+    console.error(`Image generation failed for "${recipeName}":`, err)
+    return null
+  }
+}
+
+async function uploadImage(
+  supabase: ReturnType<typeof createClient>,
+  recipeId: string,
+  imageBytes: Uint8Array
+): Promise<string | null> {
+  const path = `ai-generated/${recipeId}.png`
+  const { error } = await supabase.storage
+    .from(IMAGE_BUCKET)
+    .upload(path, imageBytes, { contentType: 'image/png', upsert: true })
+  if (error) {
+    console.error(`Image upload failed for ${recipeId}:`, error.message)
+    return null
+  }
+  return path
 }
 
 // ── Prompt builders ───────────────────────────────────────────────────────────
@@ -185,10 +240,7 @@ async function getBankState(supabase: any, catalogId: string): Promise<{
 
   const rows = data ?? []
   const recipeIds = new Set<string>(rows.map((r: { recipe_id: string }) => r.recipe_id))
-  const nextSortOrder = rows.length > 0
-    ? rows[rows.length - 1].sort_order + 1
-    : 0
-
+  const nextSortOrder = rows.length > 0 ? rows[rows.length - 1].sort_order + 1 : 0
   return { size: rows.length, recipeIds, nextSortOrder }
 }
 
@@ -238,15 +290,23 @@ async function tagExistingRecipe(supabase: any, id: string, tags: DietaryTag[]):
   await supabase.from('recipes').update({ dietary_tags: merged }).eq('id', id)
 }
 
+// Text details and image generation run in parallel — image takes longer (~15s)
+// but overlaps with text generation (~5s), so net extra time is minimal.
 async function insertRecipe(
   supabase: any,
   proposed: ProposedRecipe,
   divisionName: string
 ): Promise<string | null> {
-  console.log(`Generating details for: ${proposed.name}`)
-  const details = await geminiJSON(
-    buildRecipeDetailPrompt(proposed.name, divisionName)
-  ) as RecipeDetails
+  console.log(`Generating details + image for: ${proposed.name}`)
+
+  const [detailsResult, imageResult] = await Promise.allSettled([
+    geminiJSON(buildRecipeDetailPrompt(proposed.name, divisionName)) as Promise<RecipeDetails>,
+    geminiImage(proposed.name),
+  ])
+
+  const details: RecipeDetails = detailsResult.status === 'fulfilled'
+    ? detailsResult.value
+    : { ingredients: [], instructions: [] }
 
   const { data, error } = await supabase
     .from('recipes')
@@ -269,6 +329,16 @@ async function insertRecipe(
     console.error(`Failed to insert recipe "${proposed.name}":`, error?.message)
     return null
   }
+
+  // Upload image if generation succeeded
+  if (imageResult.status === 'fulfilled' && imageResult.value) {
+    const path = await uploadImage(supabase, data.id, imageResult.value)
+    if (path) {
+      await supabase.from('recipes').update({ image_path: path }).eq('id', data.id)
+      console.log(`Image saved for: ${proposed.name}`)
+    }
+  }
+
   return data.id
 }
 
@@ -279,7 +349,7 @@ async function resolveBatch(
   batch: ProposedRecipe[],
   division: CatalogEntry,
   bankState: { recipeIds: Set<string>; nextSortOrder: number }
-): Promise<{ inserted: number; matched: number; newInsertedIds: string[] }> {
+): Promise<{ inserted: number; matched: number }> {
   // Phase 1: look up all recipes in parallel
   const lookups = await Promise.all(
     batch.map(async (proposed) => {
@@ -293,10 +363,10 @@ async function resolveBatch(
     })
   )
 
-  const needsInsert = lookups.filter(({ existingId }) => existingId === null)
+  const needsInsert  = lookups.filter(({ existingId }) => existingId === null)
   const alreadyExists = lookups.filter(({ existingId }) => existingId !== null)
 
-  // Phase 2: generate details and insert new recipes in parallel (the Gemini bottleneck)
+  // Phase 2: generate details + images and insert new recipes in parallel
   const insertedMap = new Map<string, string>()
   await Promise.all(
     needsInsert.map(async ({ proposed }) => {
@@ -320,8 +390,7 @@ async function resolveBatch(
 
   // Phase 4: add to bank sequentially to maintain deterministic sort_order
   let inserted = 0
-  let matched = 0
-  const newInsertedIds: string[] = []
+  let matched  = 0
 
   for (const { proposed, existingId } of lookups) {
     if (existingId) {
@@ -335,28 +404,12 @@ async function resolveBatch(
       if (newId && !bankState.recipeIds.has(newId)) {
         await addToBank(supabase, division.id, newId, bankState.nextSortOrder++)
         bankState.recipeIds.add(newId)
-        newInsertedIds.push(newId)
         inserted++
       }
     }
   }
 
-  return { inserted, matched, newInsertedIds }
-}
-
-// ── Image backfill trigger ────────────────────────────────────────────────────
-
-function triggerImageBackfill(recipeIds: string[]): void {
-  if (recipeIds.length === 0) return
-  fetch(`${SUPABASE_URL}/functions/v1/backfill-recipe-images`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      apikey: SUPABASE_SERVICE_KEY,
-    },
-    body: JSON.stringify({ recipe_ids: recipeIds }),
-  }).catch(err => console.error('Image backfill trigger failed:', err))
+  return { inserted, matched }
 }
 
 // ── Main curation orchestrator ────────────────────────────────────────────────
@@ -372,7 +425,6 @@ async function curateDivision(
 }> {
   const bankState = await getBankState(supabase, division.id)
 
-  // Bank is full — rotation handles everything from here, no generation needed
   if (bankState.size >= MAX_BANK_SIZE) {
     console.log(`[${division.slug}] Bank full (${bankState.size}/${MAX_BANK_SIZE}), skipping`)
     return { mode: 'full', bankSize: bankState.size, inserted: 0, matched: 0 }
@@ -380,49 +432,52 @@ async function curateDivision(
 
   const pool: ProposedRecipe[] = []
   let inserted = 0
-  let matched = 0
-  const newInsertedIds: string[] = []
+  let matched  = 0
 
-  if (bankState.size < INITIAL_BANK_TARGET) {
-    // First run: broad generation + gap-fill until all dietary profiles have ≥ 8
-    console.log(`[${division.slug}] Initial fill (bank: ${bankState.size}/${INITIAL_BANK_TARGET})`)
-
-    const proposed1 = await geminiJSON(buildPass1Prompt(division)) as ProposedRecipe[]
-    pool.push(...proposed1)
+  if (bankState.size === 0) {
+    console.log(`[${division.slug}] Initial fill (bank empty)`)
+    try {
+      const proposed1 = await geminiJSON(buildPass1Prompt(division)) as ProposedRecipe[]
+      pool.push(...proposed1)
+    } catch (err) {
+      console.error(`[${division.slug}] Pass 1 generation failed:`, err)
+    }
 
     for (let round = 0; round < 3; round++) {
       const coverage = computeCoverage(pool)
       const gaps = gapsBelow(coverage, MIN_PER_PROFILE)
       if (gaps.length === 0) break
       console.log(`[${division.slug}] Gap fill round ${round + 1}: ${gaps.join(', ')}`)
-      await Promise.all(
+      await Promise.allSettled(
         gaps.map(async (profile) => {
-          const need = MIN_PER_PROFILE - computeCoverage(pool)[profile]
-          const extras = await geminiJSON(buildGapFillPrompt(division, profile, need)) as ProposedRecipe[]
-          pool.push(...extras)
+          try {
+            const need = MIN_PER_PROFILE - computeCoverage(pool)[profile]
+            const extras = await geminiJSON(buildGapFillPrompt(division, profile, need)) as ProposedRecipe[]
+            pool.push(...extras)
+          } catch (err) {
+            console.error(`[${division.slug}] Gap fill failed for ${profile}:`, err)
+          }
         })
       )
     }
   } else {
-    // Bank exists but isn't full — add a small fresh batch
     console.log(`[${division.slug}] Growth (bank: ${bankState.size}/${MAX_BANK_SIZE})`)
-    const existingNames = await getBankRecipeNames(supabase, division.id)
-    const proposed = await geminiJSON(buildGrowthPrompt(division, existingNames)) as ProposedRecipe[]
-    pool.push(...proposed)
+    try {
+      const existingNames = await getBankRecipeNames(supabase, division.id)
+      const proposed = await geminiJSON(buildGrowthPrompt(division, existingNames)) as ProposedRecipe[]
+      pool.push(...proposed)
+    } catch (err) {
+      console.error(`[${division.slug}] Growth generation failed:`, err)
+    }
   }
 
-  // Resolve in sequential batches to stay well within Edge Function timeout
   for (let i = 0; i < pool.length; i += RESOLVE_BATCH_SIZE) {
     const batch = pool.slice(i, i + RESOLVE_BATCH_SIZE)
     const counts = await resolveBatch(supabase, batch, division, bankState)
     inserted += counts.inserted
-    matched += counts.matched
-    newInsertedIds.push(...counts.newInsertedIds)
+    matched  += counts.matched
   }
 
-  // Stamp the catalog row and sync full bank to any active plateoffs_divisions row.
-  // For anchors the next epoch's refreshAnchorWindows will re-slice to the window;
-  // for rotating divisions the full bank is immediately playable.
   const { data: allBankRows } = await supabase
     .from('division_recipe_bank')
     .select('recipe_id')
@@ -438,12 +493,10 @@ async function curateDivision(
       .eq('id', division.id),
     supabase
       .from('plateoffs_divisions')
-      .update({ recipe_ids: fullBank })
+      .update({ recipe_ids: fullBank, curation_pending: false })
       .eq('catalog_id', division.id)
       .eq('is_active', true),
   ])
-
-  triggerImageBackfill(newInsertedIds)
 
   const mode = bankState.size < INITIAL_BANK_TARGET ? 'initial' : 'growth'
   return { mode, bankSize: fullBank.length, inserted, matched }
@@ -456,35 +509,48 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: CORS })
   }
 
+  let body: { slug?: string; catalog_id?: string }
   try {
-    const { slug, catalog_id } = await req.json()
-    if (!slug && !catalog_id) {
-      return new Response(JSON.stringify({ error: 'Provide slug or catalog_id' }), {
-        status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
-      })
-    }
+    body = await req.json()
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
+    })
+  }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+  const { slug, catalog_id } = body
+  if (!slug && !catalog_id) {
+    return new Response(JSON.stringify({ error: 'Provide slug or catalog_id' }), {
+      status: 400, headers: { ...CORS, 'Content-Type': 'application/json' },
+    })
+  }
 
-    const query = supabase.from('division_catalog').select('id, slug, name, description, category')
-    const { data: division, error } = await (slug ? query.eq('slug', slug) : query.eq('id', catalog_id))
-      .single()
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+  const query = supabase.from('division_catalog').select('id, slug, name, description, category')
+  const { data: division, error } = await (slug ? query.eq('slug', slug) : query.eq('id', catalog_id))
+    .single()
 
-    if (error || !division) {
-      return new Response(JSON.stringify({ error: 'Division not found' }), {
-        status: 404, headers: { ...CORS, 'Content-Type': 'application/json' },
-      })
-    }
+  if (error || !division) {
+    return new Response(JSON.stringify({ error: 'Division not found' }), {
+      status: 404, headers: { ...CORS, 'Content-Type': 'application/json' },
+    })
+  }
 
+  try {
     console.log(`Starting curation for: ${division.name}`)
-    const result = await curateDivision(supabase, division)
+    let result = await curateDivision(supabase, division)
+
+    if (result.mode !== 'full' && result.bankSize < INITIAL_BANK_TARGET) {
+      console.log(`[${division.slug}] Bank at ${result.bankSize}/${INITIAL_BANK_TARGET}, retrying inline`)
+      result = await curateDivision(supabase, division)
+    }
 
     return new Response(
-      JSON.stringify({ success: true, division: division.name, ...result }),
-      { headers: { ...CORS, 'Content-Type': 'application/json' } }
+      JSON.stringify({ ok: true, division: division.name, ...result }),
+      { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   } catch (err) {
-    console.error('Curation error:', err)
+    console.error(`Curation error for ${division.slug}:`, err)
     return new Response(JSON.stringify({ error: String(err) }), {
       status: 500, headers: { ...CORS, 'Content-Type': 'application/json' },
     })

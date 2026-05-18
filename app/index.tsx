@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { View, Text, TouchableOpacity, Image } from 'react-native';
+import { IS_TABLET } from '@/constants/layout';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { s } from '@/styles/intro.styles';
@@ -47,7 +48,7 @@ export default function IntroScreen() {
             <Text style={s.polaroidText}>WEEKEND BRUNCH</Text>
           </View>
 
-          <View style={[s.polaroid, { transform: [{ rotate: '6deg' }], backgroundColor: C.primary, marginTop: 40 }]}>
+          <View style={[s.polaroid, { transform: [{ rotate: '6deg' }], backgroundColor: C.primary, marginTop: IS_TABLET ? 40 : 20 }]}>
             <Image
               source={require('@/assets/power-bowls.jpg')}
               style={s.polaroidImg}
@@ -55,13 +56,15 @@ export default function IntroScreen() {
             <Text style={s.polaroidText}>DINNER DUEL</Text>
           </View>
 
-          <View style={[s.polaroid, { transform: [{ rotate: '-3deg' }], backgroundColor: C.secondary, marginTop: 16 }]}>
-            <Image
-              source={require('@/assets/weekend-brunch.jpg')}
-              style={s.polaroidImg}
-            />
-            <Text style={s.polaroidText}>POWER BOWLS</Text>
-          </View>
+          {IS_TABLET && (
+            <View style={[s.polaroid, { transform: [{ rotate: '-3deg' }], backgroundColor: C.secondary, marginTop: 16 }]}>
+              <Image
+                source={require('@/assets/power-bowls-cover.png')}
+                style={s.polaroidImg}
+              />
+              <Text style={s.polaroidText}>POWER BOWLS</Text>
+            </View>
+          )}
         </View>
       </View>
       <AppFooter />
