@@ -12,21 +12,17 @@ const CORS = {
 
 const EPOCH_ZERO_UNIX = new Date('2025-06-01T00:00:00Z').getTime() / 1000
 
-const ANCHOR_INTERVAL_SEC = 432000  // 5 days — recipes refresh, divisions stay
-const BRACKET_SIZE = 8             // minimum recipes needed to play a division
+const ANCHOR_INTERVAL_SEC = 432000  // 5 days
+const BRACKET_SIZE        = 8       // minimum recipes needed to play a division
+const ANCHOR_WINDOW_SIZE  = 40      // recipes shown per anchor epoch
+const MAX_BANK_SIZE       = 250     // mirrors curate-division-recipes
 
-// Slot intervals in seconds
 const SLOTS = [
-  { key: 'r1', intervalSec: 259200, category: 'cuisine',  displayBase: 5  },  // 3 days
-  { key: 'r2', intervalSec: 604800, category: 'seasonal', displayBase: 10 },  // 7 days
-  { key: 'r3', intervalSec: 432000, category: 'wildcard', displayBase: 15 },  // 5 days
-  { key: 'r4', intervalSec: 345600, category: 'dessert',  displayBase: 20 },  // 4 days
+  { key: 'r1', intervalSec: 259200, category: 'cuisine',  displayBase: 5  },
+  { key: 'r2', intervalSec: 604800, category: 'seasonal', displayBase: 10 },
+  { key: 'r3', intervalSec: 432000, category: 'wildcard', displayBase: 15 },
+  { key: 'r4', intervalSec: 345600, category: 'dessert',  displayBase: 20 },
 ] as const
-
-type SlotKey = typeof SLOTS[number]['key']
-
-// Display order interleave: R1=5, A1=1, R2=10, A2=2, R3=15, A3=3, R4=20, A4=4
-// Anchors are fixed; rotating slots use displayBase above
 
 // ── Epoch helpers ─────────────────────────────────────────────────────────────
 
@@ -35,8 +31,7 @@ function currentEpoch(intervalSec: number): number {
 }
 
 function nextRotationAt(epoch: number, intervalSec: number): string {
-  const unix = EPOCH_ZERO_UNIX + (epoch + 1) * intervalSec
-  return new Date(unix * 1000).toISOString()
+  return new Date((EPOCH_ZERO_UNIX + (epoch + 1) * intervalSec) * 1000).toISOString()
 }
 
 // ── App config helpers ────────────────────────────────────────────────────────
@@ -59,6 +54,21 @@ async function updateAppConfig(
   )
 }
 
+// ── Bank helpers ──────────────────────────────────────────────────────────────
+
+// Fetches all recipe_ids for a catalog entry in rotation order.
+async function getBankRecipeIds(
+  supabase: ReturnType<typeof createClient>,
+  catalogId: string
+): Promise<string[]> {
+  const { data } = await supabase
+    .from('division_recipe_bank')
+    .select('recipe_id')
+    .eq('catalog_id', catalogId)
+    .order('sort_order', { ascending: true })
+  return (data ?? []).map((r: { recipe_id: string }) => r.recipe_id)
+}
+
 // ── Division selection ────────────────────────────────────────────────────────
 
 async function selectDivisionForSlot(
@@ -66,22 +76,21 @@ async function selectDivisionForSlot(
   category: string,
   epoch: number,
   currentMonth: number
-): Promise<{ id: string; slug: string; name: string; recipe_ids: string[] | null; cover_image_url: string | null } | null> {
-  let query = supabase
+): Promise<{ id: string; slug: string; name: string; cover_image_url: string | null } | null> {
+  const { data: pool } = await supabase
     .from('division_catalog')
-    .select('id, slug, name, recipe_ids, active_months, cover_image_url')
+    .select('id, slug, name, active_months, cover_image_url')
     .eq('category', category)
 
-  const { data: pool } = await query
   if (!pool?.length) return null
 
-  // For seasonal, filter to entries eligible this month
   const eligible = category === 'seasonal'
-    ? pool.filter(e => !e.active_months || e.active_months.includes(currentMonth))
+    ? pool.filter((e: { active_months: number[] | null }) =>
+        !e.active_months || e.active_months.includes(currentMonth)
+      )
     : pool
 
   if (!eligible.length) return null
-
   return eligible[epoch % eligible.length]
 }
 
@@ -99,33 +108,35 @@ async function rotateSlot(
     return null
   }
 
-  // Deactivate current rotating division for this slot
+  // Deactivate previous division in this slot's category
   await supabase
     .from('plateoffs_divisions')
     .update({ is_active: false })
     .eq('division_type', 'rotating')
     .eq('catalog_id', await getActiveSlotCatalogId(supabase, slot.key))
 
-  // Upsert the new active division
+  // Fetch the full bank for this division to populate the active slot
+  const recipeIds = await getBankRecipeIds(supabase, entry.id)
+
   await supabase.from('plateoffs_divisions').upsert(
     {
-      name:             entry.name,
-      slug:             entry.slug,
-      category:         slot.category,
-      catalog_id:       entry.id,
-      division_type:    'rotating',
-      is_active:        true,
-      display_order:    slot.displayBase,
-      recipe_ids:       entry.recipe_ids ?? [],
-      cover_image_url:  entry.cover_image_url ?? null,
-      active_from:      new Date().toISOString(),
-      active_until:     nextRotationAt(epoch, slot.intervalSec),
+      name:            entry.name,
+      slug:            entry.slug,
+      category:        slot.category,
+      catalog_id:      entry.id,
+      division_type:   'rotating',
+      is_active:       true,
+      display_order:   slot.displayBase,
+      recipe_ids:      recipeIds,
+      cover_image_url: entry.cover_image_url ?? null,
+      active_from:     new Date().toISOString(),
+      active_until:    nextRotationAt(epoch, slot.intervalSec),
     },
     { onConflict: 'slug' }
   )
 
-  const needsCuration = !entry.recipe_ids || entry.recipe_ids.length < BRACKET_SIZE
-  console.log(`[${slot.key}] Activated: ${entry.slug} (needs curation: ${needsCuration})`)
+  const needsCuration = recipeIds.length < BRACKET_SIZE
+  console.log(`[${slot.key}] Activated: ${entry.slug} (bank: ${recipeIds.length}, needs curation: ${needsCuration})`)
   return { slug: entry.slug, needsCuration }
 }
 
@@ -133,7 +144,6 @@ async function getActiveSlotCatalogId(
   supabase: ReturnType<typeof createClient>,
   slotKey: string
 ): Promise<string | null> {
-  // Find the currently active rotating division for this slot's category
   const slotDef = SLOTS.find(s => s.key === slotKey)!
   const { data } = await supabase
     .from('plateoffs_divisions')
@@ -145,26 +155,81 @@ async function getActiveSlotCatalogId(
   return data?.catalog_id ?? null
 }
 
-// ── Anchor recipe refresh ─────────────────────────────────────────────────────
+// ── Anchor window rotation ────────────────────────────────────────────────────
 
-async function refreshAnchorRecipes(
+// Each epoch, advance rotation_index by ANCHOR_WINDOW_SIZE through the bank,
+// write the new window to plateoffs_divisions, and persist the updated index.
+async function refreshAnchorWindows(
   supabase: ReturnType<typeof createClient>
-): Promise<string[]> {
-  const { data } = await supabase
+): Promise<{ slugs: string[]; needsCuration: string[] }> {
+  const { data: anchors } = await supabase
     .from('plateoffs_divisions')
-    .select('slug')
+    .select('slug, catalog_id')
     .eq('division_type', 'anchor')
     .eq('is_active', true)
 
-  const slugs = (data ?? []).map((r: { slug: string }) => r.slug)
-  console.log(`Refreshing recipes for ${slugs.length} anchor divisions`)
-  return slugs
+  if (!anchors?.length) return { slugs: [], needsCuration: [] }
+
+  const slugs: string[] = []
+  const needsCuration: string[] = []
+
+  await Promise.all(
+    anchors.map(async (anchor: { slug: string; catalog_id: string }) => {
+      slugs.push(anchor.slug)
+
+      // Load bank in rotation order and current index together
+      const [bank, catalogData] = await Promise.all([
+        getBankRecipeIds(supabase, anchor.catalog_id),
+        supabase
+          .from('division_catalog')
+          .select('rotation_index')
+          .eq('id', anchor.catalog_id)
+          .single()
+          .then(({ data }) => data),
+      ])
+
+      if (bank.length === 0) {
+        // Bank empty — curation will fill it and sync plateoffs_divisions
+        needsCuration.push(anchor.slug)
+        return
+      }
+
+      const currentIndex: number = catalogData?.rotation_index ?? 0
+      const windowSize = Math.min(ANCHOR_WINDOW_SIZE, bank.length)
+      const nextIndex = (currentIndex + windowSize) % bank.length
+
+      // Slice the window, wrapping around the end of the bank
+      const window: string[] = Array.from(
+        { length: windowSize },
+        (_, i) => bank[(currentIndex + i) % bank.length]
+      )
+
+      await Promise.all([
+        supabase
+          .from('division_catalog')
+          .update({ rotation_index: nextIndex })
+          .eq('id', anchor.catalog_id),
+        supabase
+          .from('plateoffs_divisions')
+          .update({ recipe_ids: window })
+          .eq('slug', anchor.slug),
+      ])
+
+      console.log(
+        `[anchor] ${anchor.slug}: index ${currentIndex}→${nextIndex}, ` +
+        `window size ${windowSize}, bank size ${bank.length}`
+      )
+
+      // Keep growing until capped
+      if (bank.length < MAX_BANK_SIZE) needsCuration.push(anchor.slug)
+    })
+  )
+
+  return { slugs, needsCuration }
 }
 
 // ── Incomplete division check ─────────────────────────────────────────────────
 
-// Finds active divisions that haven't reached the minimum recipe count yet.
-// Runs every hourly tick so a curation that timed out mid-run keeps being retried.
 async function findIncompleteDivisions(
   supabase: ReturnType<typeof createClient>
 ): Promise<string[]> {
@@ -183,7 +248,6 @@ async function findIncompleteDivisions(
 // ── Curation trigger ──────────────────────────────────────────────────────────
 
 async function triggerCuration(slug: string): Promise<void> {
-  // Call curate-division-recipes as a background subrequest
   const res = await fetch(
     `${SUPABASE_URL}/functions/v1/curate-division-recipes`,
     {
@@ -199,7 +263,7 @@ async function triggerCuration(slug: string): Promise<void> {
   if (!res.ok) {
     console.error(`Curation failed for ${slug}: ${res.status} ${await res.text()}`)
   } else {
-    console.log(`Curation queued for: ${slug}`)
+    console.log(`Curation triggered for: ${slug}`)
   }
 }
 
@@ -213,7 +277,7 @@ Deno.serve(async (req) => {
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     const storedEpochs = await getStoredEpochs(supabase)
-    const currentMonth = new Date().getMonth() + 1 // 1-indexed
+    const currentMonth = new Date().getMonth() + 1
     const configUpdates: { key: string; value: string }[] = []
     const activated: string[] = []
     const curationSlugs: string[] = []
@@ -225,14 +289,12 @@ Deno.serve(async (req) => {
       if (epoch > stored) {
         console.log(`Slot ${slot.key} advanced: epoch ${stored} → ${epoch}`)
         const result = await rotateSlot(supabase, slot, epoch, currentMonth)
-
         if (result) {
           activated.push(result.slug)
           if (result.needsCuration) curationSlugs.push(result.slug)
         }
-
         configUpdates.push(
-          { key: `${slot.key}_epoch`,          value: String(epoch) },
+          { key: `${slot.key}_epoch`,            value: String(epoch) },
           { key: `next_${slot.key}_rotation_at`, value: nextRotationAt(epoch, slot.intervalSec) }
         )
       } else {
@@ -240,52 +302,41 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Check anchor recipe refresh (5-day cycle)
     const anchorEpoch = currentEpoch(ANCHOR_INTERVAL_SEC)
     const storedAnchorEpoch = storedEpochs['anchor_epoch'] ?? -1
+
     if (anchorEpoch > storedAnchorEpoch) {
       console.log(`Anchor epoch advanced: ${storedAnchorEpoch} → ${anchorEpoch}`)
-      const anchorSlugs = await refreshAnchorRecipes(supabase)
-      curationSlugs.push(...anchorSlugs)
+      const { needsCuration: anchorCuration } = await refreshAnchorWindows(supabase)
+      curationSlugs.push(...anchorCuration)
       configUpdates.push(
-        { key: 'anchor_epoch',           value: String(anchorEpoch) },
+        { key: 'anchor_epoch',            value: String(anchorEpoch) },
         { key: 'next_anchor_rotation_at', value: nextRotationAt(anchorEpoch, ANCHOR_INTERVAL_SEC) }
       )
     } else {
       console.log(`Anchor unchanged (epoch ${anchorEpoch})`)
     }
 
-    if (configUpdates.length) {
-      await updateAppConfig(supabase, configUpdates)
-    }
+    if (configUpdates.length) await updateAppConfig(supabase, configUpdates)
 
-    // Also retry any already-active divisions that still lack enough recipes
-    // (handles curation jobs that timed out mid-run in a previous cycle)
+    // Retry active divisions still below the playable threshold
     const incompleteSlugs = await findIncompleteDivisions(supabase)
     for (const slug of incompleteSlugs) {
       if (!curationSlugs.includes(slug)) curationSlugs.push(slug)
     }
 
-    // Trigger curation for each newly activated / refreshed / incomplete division
-    // Fire-and-forget — don't await so we don't block the response
     for (const slug of curationSlugs) {
       triggerCuration(slug).catch(err => console.error(`Curation error for ${slug}:`, err))
     }
 
     return new Response(
-      JSON.stringify({
-        ok: true,
-        activated,
-        curationTriggered: curationSlugs,
-        slotsChecked: SLOTS.length + 1,  // +1 for anchor
-      }),
+      JSON.stringify({ ok: true, activated, curationTriggered: curationSlugs, slotsChecked: SLOTS.length + 1 }),
       { headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   } catch (err) {
     console.error('rotate-divisions error:', err)
     return new Response(JSON.stringify({ error: String(err) }), {
-      status: 500,
-      headers: { ...CORS, 'Content-Type': 'application/json' },
+      status: 500, headers: { ...CORS, 'Content-Type': 'application/json' },
     })
   }
 })

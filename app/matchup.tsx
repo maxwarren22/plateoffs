@@ -6,14 +6,13 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTournamentStore } from '@/store/tournament';
 import type { Recipe } from '@/types/recipe';
 import { C } from '@/constants/colors';
-import { LAYOUT_WIDTH } from '@/constants/layout';
+import { LAYOUT_WIDTH, IS_TABLET } from '@/constants/layout';
 
 export default function MatchupScreen() {
   const router = useRouter();
@@ -64,26 +63,67 @@ export default function MatchupScreen() {
 
       {/* Main Duel Area */}
       <View style={s.duelArea}>
-        <RecipeCard
-          recipe={leftRecipe}
-          accent={C.cyan}
-          imageRight={false}
-          onSelect={() => selectWinner(leftRecipe, 'left')}
-        />
 
-        {/* VS separator */}
-        <View style={s.vsRow}>
-          <View style={s.vsBadge}>
-            <Text style={s.vsText}>VS</Text>
+        {/* ── Decorative layer (absolute, behind cards) ── */}
+        <View style={s.decorLayer} pointerEvents="none">
+          <Text style={s.decorWatermark}>BATTLE</Text>
+          <Text style={[s.decorCorner, { top: 14, left: 14 }]}>✦</Text>
+          <Text style={[s.decorCorner, { top: 14, right: 14 }]}>✦</Text>
+          <Text style={[s.decorCorner, { bottom: 14, left: 14 }]}>★</Text>
+          <Text style={[s.decorCorner, { bottom: 14, right: 14 }]}>★</Text>
+        </View>
+
+        {/* ── Top fight-card banner ── */}
+        <View style={s.fightBanner} pointerEvents="none">
+          <View style={s.fightBannerStripes}>
+            {Array.from({ length: 18 }).map((_, i) => (
+              <View key={i} style={[s.fightStripe, { backgroundColor: i % 2 === 0 ? '#0a0502' : 'rgba(240,184,75,0.35)' }]} />
+            ))}
+          </View>
+          <View style={s.fightBannerInner}>
+            <Text style={s.fightBannerLabel}>TONIGHT'S MAIN EVENT</Text>
           </View>
         </View>
 
-        <RecipeCard
-          recipe={rightRecipe}
-          accent={C.hotPink}
-          imageRight={true}
-          onSelect={() => selectWinner(rightRecipe, 'right')}
-        />
+        {/* ── Tablet-only arena stats strip ── */}
+        {IS_TABLET && (
+          <View style={s.arenaStats} pointerEvents="none">
+            <Text style={s.arenaStatText}>⚔  TASTE TOURNAMENT</Text>
+            <View style={s.arenaStatDot} />
+            <Text style={s.arenaStatText}>{Math.max(0, totalMatchups - matchupCount)} BATTLES REMAINING</Text>
+            <View style={s.arenaStatDot} />
+            <Text style={s.arenaStatText}>PICK YOUR CHAMPION  ⚔</Text>
+          </View>
+        )}
+
+        {/* ── Cards row ── */}
+        <View style={s.cardsRow}>
+          <RecipeCard
+            recipe={leftRecipe}
+            accent={C.cyan}
+            label="CONTENDER"
+            imageRight={false}
+            onSelect={() => selectWinner(leftRecipe, 'left')}
+          />
+
+          {/* VS separator */}
+          <View style={s.vsRow}>
+            <Text style={s.vsFlankText}>⚡</Text>
+            <View style={s.vsBadge}>
+              <Text style={s.vsText}>VS</Text>
+            </View>
+            <Text style={s.vsFlankText}>⚡</Text>
+          </View>
+
+          <RecipeCard
+            recipe={rightRecipe}
+            accent={C.hotPink}
+            label="CHALLENGER"
+            imageRight={true}
+            onSelect={() => selectWinner(rightRecipe, 'right')}
+          />
+        </View>
+
       </View>
 
       {/* Footer */}
@@ -112,11 +152,13 @@ function RecipeCard({
   recipe,
   accent,
   imageRight,
+  label,
   onSelect,
 }: {
   recipe: Recipe;
   accent: string;
   imageRight: boolean;
+  label: string;
   onSelect: () => void;
 }) {
   const content = (
@@ -150,17 +192,31 @@ function RecipeCard({
   );
 
   return (
-    <TouchableOpacity
-      onPress={onSelect}
-      activeOpacity={0.7}
-      style={[
-        s.card,
-        { borderColor: accent },
-        imageRight && { flexDirection: 'row-reverse' },
-      ]}
-    >
-      {content}
-    </TouchableOpacity>
+    <View style={[s.cardOuter, IS_TABLET && { flex: 1 }]}>
+      {/* Label badge above card */}
+      <View style={[s.cardLabelBadge, { backgroundColor: accent }, imageRight && s.cardLabelBadgeRight]}>
+        <Text style={s.cardLabelText}>{label}</Text>
+      </View>
+
+      {/* Card + corner brackets */}
+      <View style={s.cardBracketWrap}>
+        <View style={[s.bracketTL, { borderColor: accent }]} pointerEvents="none" />
+        <View style={[s.bracketTR, { borderColor: accent }]} pointerEvents="none" />
+        <View style={[s.bracketBL, { borderColor: accent }]} pointerEvents="none" />
+        <View style={[s.bracketBR, { borderColor: accent }]} pointerEvents="none" />
+        <TouchableOpacity
+          onPress={onSelect}
+          activeOpacity={0.7}
+          style={[
+            s.card,
+            { borderColor: accent },
+            imageRight && { flexDirection: 'row-reverse' },
+          ]}
+        >
+          {content}
+        </TouchableOpacity>
+      </View>
+    </View>
   );
 }
 
@@ -184,10 +240,76 @@ const s = StyleSheet.create({
   progressFill: { height: '100%', backgroundColor: C.tertiaryContainer },
   roundInfo: { fontSize: 10, fontWeight: '700', color: C.onBackground },
 
-  duelArea: { flex: 1, paddingHorizontal: 12, paddingVertical: 20, justifyContent: 'center' },
+  duelArea: {
+    flex: 1,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+  },
+
+  arenaStats: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 10, paddingHorizontal: 20, gap: 12,
+    borderBottomWidth: 1, borderBottomColor: 'rgba(240,184,75,0.15)',
+  },
+  arenaStatText: {
+    fontSize: 10, fontWeight: '900', letterSpacing: 2, color: 'rgba(240,184,75,0.55)',
+    fontStyle: 'italic',
+  },
+  arenaStatDot: {
+    width: 4, height: 4, borderRadius: 2, backgroundColor: 'rgba(240,184,75,0.3)',
+  },
+
+  cardsRow: {
+    flex: 1,
+    flexDirection: IS_TABLET ? 'row' : 'column',
+    alignItems: IS_TABLET ? 'center' : 'stretch',
+    justifyContent: 'center',
+    paddingHorizontal: IS_TABLET ? 20 : 12,
+    paddingVertical: IS_TABLET ? 20 : 20,
+    gap: IS_TABLET ? 16 : 0,
+  },
+
+  cardOuter: {
+    flexDirection: 'column',
+    gap: 8,
+  },
+  cardLabelBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14, paddingVertical: 5,
+    transform: [{ skewX: '-6deg' }],
+    borderWidth: 2, borderColor: '#000',
+  },
+  cardLabelBadgeRight: { alignSelf: 'flex-end' },
+  cardLabelText: { fontSize: 11, fontWeight: '900', color: '#000', letterSpacing: 2 },
+
+  cardBracketWrap: { position: 'relative' },
+  bracketTL: {
+    position: 'absolute', top: -10, left: -10, zIndex: 20,
+    width: 26, height: 26,
+    borderTopWidth: 3, borderLeftWidth: 3, borderBottomWidth: 0, borderRightWidth: 0,
+    borderTopLeftRadius: 3,
+  },
+  bracketTR: {
+    position: 'absolute', top: -10, right: -10, zIndex: 20,
+    width: 26, height: 26,
+    borderTopWidth: 3, borderRightWidth: 3, borderBottomWidth: 0, borderLeftWidth: 0,
+    borderTopRightRadius: 3,
+  },
+  bracketBL: {
+    position: 'absolute', bottom: -10, left: -10, zIndex: 20,
+    width: 26, height: 26,
+    borderBottomWidth: 3, borderLeftWidth: 3, borderTopWidth: 0, borderRightWidth: 0,
+    borderBottomLeftRadius: 3,
+  },
+  bracketBR: {
+    position: 'absolute', bottom: -10, right: -10, zIndex: 20,
+    width: 26, height: 26,
+    borderBottomWidth: 3, borderRightWidth: 3, borderTopWidth: 0, borderLeftWidth: 0,
+    borderBottomRightRadius: 3,
+  },
 
   card: {
-    height: 250,
+    height: IS_TABLET ? 360 : 250,
     flexDirection: 'row',
     backgroundColor: C.surfaceContainerHigh,
     borderWidth: 6,
@@ -212,19 +334,27 @@ const s = StyleSheet.create({
 
   cardInfo: { flex: 1, padding: 12, justifyContent: 'center' },
   cardInfoRight: { alignItems: 'flex-end' },
-  cardTitle: { fontWeight: '900', fontSize: 22, fontStyle: 'italic', marginBottom: 6, lineHeight: 22 },
+  cardTitle: { fontWeight: '900', fontSize: IS_TABLET ? 28 : 22, fontStyle: 'italic', marginBottom: 6, lineHeight: IS_TABLET ? 28 : 22 },
   tagRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   tag: { backgroundColor: C.surface, paddingHorizontal: 6, paddingVertical: 2, borderWidth: 2, borderColor: '#000' },
   tagText: { fontSize: 9, fontWeight: '900', color: C.onSurface },
 
   vsRow: {
     alignSelf: 'center',
-    marginVertical: -48,
+    marginVertical: IS_TABLET ? 0 : -48,
     zIndex: 10,
+    flexDirection: 'row',
     alignItems: 'center', justifyContent: 'center',
+    gap: IS_TABLET ? 16 : 8,
+  },
+  vsFlankText: {
+    fontSize: IS_TABLET ? 28 : 20,
+    color: 'rgba(255,255,255,0.35)',
   },
   vsBadge: {
-    width: 130, height: 130, borderRadius: 65,
+    width: IS_TABLET ? 160 : 130,
+    height: IS_TABLET ? 160 : 130,
+    borderRadius: IS_TABLET ? 80 : 65,
     backgroundColor: 'rgba(10,5,4,0.88)',
     borderWidth: 6, borderColor: '#555',
     alignItems: 'center', justifyContent: 'center',
@@ -234,9 +364,47 @@ const s = StyleSheet.create({
     shadowRadius: 0,
     elevation: 10,
   },
-  vsText: { fontWeight: '900', fontSize: 52, color: '#fff', fontStyle: 'italic' },
+  vsText: { fontWeight: '900', fontSize: IS_TABLET ? 64 : 52, color: '#fff', fontStyle: 'italic' },
 
   footer: { paddingHorizontal: 24, paddingBottom: 24, alignItems: 'center', gap: 16 },
   tapHint: { fontSize: 13, fontWeight: '900', color: C.onSurfaceVariant, letterSpacing: 1 },
   backLink: { fontSize: 12, fontWeight: '900', color: C.onSurfaceVariant, letterSpacing: 1 },
+
+  // ── Maximalist decor ──────────────────────────────────────────────────────
+  decorLayer: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    overflow: 'hidden',
+  },
+  decorWatermark: {
+    position: 'absolute', top: '25%', left: '-8%',
+    fontSize: 180, fontWeight: '900', fontStyle: 'italic',
+    color: 'rgba(255,255,255,0.022)',
+    transform: [{ rotate: '-18deg' }],
+    letterSpacing: -6,
+  },
+  decorCorner: {
+    position: 'absolute',
+    fontSize: 22, fontWeight: '900',
+    color: 'rgba(255,255,255,0.18)',
+  },
+
+  fightBanner: {
+    zIndex: 2, overflow: 'hidden',
+  },
+  fightBannerStripes: {
+    flexDirection: 'row', height: 8, overflow: 'hidden',
+  },
+  fightStripe: {
+    flex: 1, height: 14, transform: [{ skewX: '-20deg' }],
+  },
+  fightBannerInner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 9,
+    backgroundColor: 'rgba(10,5,2,0.75)',
+    borderBottomWidth: 2, borderBottomColor: 'rgba(240,184,75,0.25)',
+  },
+  fightBannerLabel: {
+    fontSize: 10, fontWeight: '900', color: C.trophyGold,
+    letterSpacing: 2.5, fontStyle: 'italic', opacity: 0.9,
+  },
 });

@@ -16,7 +16,7 @@ import { useTournamentStore } from '@/store/tournament';
 import { fetchRecipeById } from '@/lib/supabase';
 import type { Recipe } from '@/types/recipe';
 import { C } from '@/constants/colors';
-import { LAYOUT_WIDTH } from '@/constants/layout';
+import { IS_TABLET, useLayout } from '@/constants/layout';
 
 type Ingredient = { name?: string; quantity?: string | number; unit?: string; notes?: string };
 
@@ -105,8 +105,12 @@ function CollapsibleRecipePanel({
   );
 }
 
+const MAX_CONTENT_W = 1060;
+
 export default function ChampionScreen() {
   const router = useRouter();
+  const { isTablet, screenWidth } = useLayout();
+  const hPad = isTablet ? Math.max(32, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 24;
   const { champion, reset } = useTournamentStore();
   const [fullRecipe, setFullRecipe] = useState<Recipe | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -131,125 +135,137 @@ export default function ChampionScreen() {
 
   return (
     <SafeAreaView style={s.root}>
-      <View style={s.centeredWrapper}>
-      {/* Header */}
+      {/* Header — full screen width */}
       <View style={s.header}>
         <Text style={s.wordmark}>PLATEOFFS</Text>
       </View>
 
-      <ScrollView contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-        {/* Electric glow headline */}
-        <View style={s.headlineContainer}>
-          <Text style={s.headline}>WE HAVE A{'\n'}CHAMPION!</Text>
-          <View style={s.starsRow}>
-            <Text style={s.star}>★</Text>
-            <Text style={s.starAlt}>✦</Text>
-            <Text style={s.star}>★</Text>
+      {/* ScrollView spans full screen so you can scroll anywhere on the page */}
+      <ScrollView style={s.scroll} contentContainerStyle={[s.content, isTablet && s.contentTablet, { paddingHorizontal: hPad }]} showsVerticalScrollIndicator={false}>
+        {/* Left col on tablet: headline + image. Phone: flows inline. */}
+        <View style={isTablet ? s.tabletLeft : s.phoneCol}>
+          {/* Electric glow headline */}
+          <View style={s.headlineContainer}>
+            <Text style={s.headline}>WE HAVE A{'\n'}CHAMPION!</Text>
+            <View style={s.starsRow}>
+              <Text style={s.star}>★</Text>
+              <Text style={s.starAlt}>✦</Text>
+              <Text style={s.star}>★</Text>
+            </View>
           </View>
-        </View>
 
-        {/* Layered image frame */}
-        <View style={s.frameOuter} accessible accessibilityLabel={`Photo of ${champion.title}`}>
-          <View style={s.frameBacking} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
-          <View style={s.frameCard}>
-            <Image
-              source={imgSource}
-              style={s.winnerImage}
-              resizeMode="cover"
-              accessibilityElementsHidden
-              importantForAccessibility="no-hide-descendants"
-            />
-            <View style={s.winnerBadge} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-              <Text style={s.winnerBadgeText}>★ WINNER</Text>
+          {/* Layered image frame */}
+          <View style={s.frameOuter} accessible accessibilityLabel={`Photo of ${champion.title}`}>
+            <View style={s.frameBacking} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+            <View style={s.frameCard}>
+              <Image
+                source={imgSource}
+                style={s.winnerImage}
+                resizeMode="cover"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+              />
+              <View style={s.winnerBadge} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                <Text style={s.winnerBadgeText}>★ WINNER</Text>
+              </View>
             </View>
           </View>
         </View>
 
-        {/* Recipe info */}
-        <View style={s.infoCard}>
-          <Text style={s.recipeTitle}>{champion.title.toUpperCase()}</Text>
-          {(champion.cook_time_minutes || champion.difficulty) ? (
-            <View style={s.metaRow}>
-              {champion.cook_time_minutes ? (
-                <Text style={s.metaText}>⏱ {champion.cook_time_minutes} MINS</Text>
-              ) : null}
-              {champion.difficulty ? (
-                <Text style={s.metaText}>🔥 {champion.difficulty.toUpperCase()}</Text>
-              ) : null}
-            </View>
-          ) : null}
-          {champion.description ? (
-            <Text style={s.recipeDesc}>{champion.description}</Text>
-          ) : null}
-          <Text style={s.aiDisclaimer}>AI-generated recipe — always use your best judgement when cooking.</Text>
+        {/* Right col on tablet: recipe info + panels + CTAs. Phone: flows inline. */}
+        <View style={isTablet ? s.tabletRight : s.phoneCol}>
+          {/* Recipe info */}
+          <View style={s.infoCard}>
+            <Text style={s.recipeTitle}>{champion.title.toUpperCase()}</Text>
+            {(champion.cook_time_minutes || champion.difficulty) ? (
+              <View style={s.metaRow}>
+                {champion.cook_time_minutes ? (
+                  <Text style={s.metaText}>⏱ {champion.cook_time_minutes} MINS</Text>
+                ) : null}
+                {champion.difficulty ? (
+                  <Text style={s.metaText}>🔥 {champion.difficulty.toUpperCase()}</Text>
+                ) : null}
+              </View>
+            ) : null}
+            {champion.description ? (
+              <Text style={s.recipeDesc}>{champion.description}</Text>
+            ) : null}
+            <Text style={s.aiDisclaimer}>AI-generated recipe — always use your best judgement when cooking.</Text>
+          </View>
+
+          {/* ── Collapsible panels ── */}
+          <CollapsibleRecipePanel
+            label="INGREDIENTS"
+            accentColor={C.secondary}
+            shadowColor={C.secondaryContainer}
+            rotate="-1.5deg"
+            items={fullRecipe?.ingredients}
+            loading={loadingDetails}
+          />
+
+          <CollapsibleRecipePanel
+            label="INSTRUCTIONS"
+            accentColor={C.tertiaryContainer}
+            shadowColor="#d05bff"
+            rotate="1deg"
+            items={fullRecipe?.instructions}
+            loading={loadingDetails}
+            numbered
+          />
+
+          {/* CTAs */}
+          <TouchableOpacity
+            onPress={async () => {
+              const deepLink = `curatemyplate://recipe?id=${champion.id}&action=save`;
+              try {
+                await Linking.openURL(deepLink);
+              } catch {
+                Alert.alert(
+                  'Curate My Plate not found',
+                  'Install the Curate My Plate app to save and cook this recipe.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Install',
+                      onPress: () => Linking.openURL('https://apps.apple.com/app/id6762019159'),
+                    },
+                  ],
+                );
+              }
+            }}
+            activeOpacity={0.85}
+            style={s.primaryCta}
+            accessibilityRole="button"
+            accessibilityLabel="Save Recipe in Curate My Plate"
+          >
+            <Text style={s.primaryCtaText}>Save Recipe in Curate My Plate</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => { reset(); router.replace('/lobby'); }}
+            activeOpacity={0.85}
+            style={s.secondaryCta}
+            accessibilityRole="button"
+            accessibilityLabel="Play another division"
+          >
+            <Text style={s.secondaryCtaText}>PLAY ANOTHER DIVISION  ↻</Text>
+          </TouchableOpacity>
         </View>
-
-        {/* ── Collapsible panels ── */}
-        <CollapsibleRecipePanel
-          label="INGREDIENTS"
-          accentColor={C.secondary}
-          shadowColor={C.secondaryContainer}
-          rotate="-1.5deg"
-          items={fullRecipe?.ingredients}
-          loading={loadingDetails}
-        />
-
-        <CollapsibleRecipePanel
-          label="INSTRUCTIONS"
-          accentColor={C.tertiaryContainer}
-          shadowColor="#d05bff"
-          rotate="1deg"
-          items={fullRecipe?.instructions}
-          loading={loadingDetails}
-          numbered
-        />
-
-        {/* CTAs */}
-        <TouchableOpacity
-          onPress={async () => {
-            const deepLink = `curatemyplate://recipe?id=${champion.id}&action=save`;
-            try {
-              await Linking.openURL(deepLink);
-            } catch {
-              Alert.alert(
-                'Curate My Plate not found',
-                'Install the Curate My Plate app to save and cook this recipe.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Install',
-                    onPress: () => Linking.openURL('https://apps.apple.com/app/id6762019159'),
-                  },
-                ],
-              );
-            }
-          }}
-          activeOpacity={0.85}
-          style={s.primaryCta}
-          accessibilityRole="button"
-          accessibilityLabel="Save Recipe in Curate My Plate"
-        >
-          <Text style={s.primaryCtaText}>Save Recipe in Curate My Plate</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => { reset(); router.replace('/lobby'); }}
-          activeOpacity={0.85}
-          style={s.secondaryCta}
-          accessibilityRole="button"
-          accessibilityLabel="Play another division"
-        >
-          <Text style={s.secondaryCtaText}>PLAY ANOTHER DIVISION  ↻</Text>
-        </TouchableOpacity>
       </ScrollView>
-      </View>
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.surface },
-  centeredWrapper: { flex: 1, width: '100%', maxWidth: LAYOUT_WIDTH, alignSelf: 'center' },
+  scroll: { flex: 1 },
+
+  // Two-column layout helpers
+  contentTablet: { flexDirection: 'row', gap: 32, alignItems: 'flex-start' },
+  tabletLeft: { flex: 1, gap: 24 },
+  tabletRight: { flex: 1, gap: IS_TABLET ? 28 : 24 },
+  phoneCol: { gap: 28 },
+
   header: {
     alignItems: 'center',
     paddingHorizontal: 20, paddingVertical: 14,
@@ -262,12 +278,14 @@ const s = StyleSheet.create({
     textShadowColor: '#000', textShadowOffset: { width: 2, height: 2 }, textShadowRadius: 0,
   },
 
-  content: { paddingHorizontal: 24, paddingBottom: 48, gap: 28 },
+  // paddingHorizontal injected dynamically — keeps the contentContainer
+  // full-width so the ScrollView receives gestures across the whole screen.
+  content: { paddingTop: IS_TABLET ? 64 : 20, paddingBottom: 48, gap: 28 },
 
-  headlineContainer: { alignItems: 'center', paddingTop: 20 },
+  headlineContainer: { alignItems: 'center' },
   headline: {
-    fontWeight: '900', fontSize: 52, color: C.tertiaryContainer,
-    fontStyle: 'italic', textAlign: 'center', lineHeight: 50,
+    fontWeight: '900', fontSize: IS_TABLET ? 64 : 52, color: C.tertiaryContainer,
+    fontStyle: 'italic', textAlign: 'center', lineHeight: IS_TABLET ? 62 : 50,
     transform: [{ rotate: '-2deg' }],
     textShadowColor: '#d05bff',
     textShadowOffset: { width: 0, height: 0 },
@@ -294,7 +312,7 @@ const s = StyleSheet.create({
     shadowRadius: 0,
     elevation: 12,
   },
-  winnerImage: { width: '100%', height: 300 },
+  winnerImage: { width: '100%', height: IS_TABLET ? 420 : 300 },
   winnerBadge: {
     position: 'absolute', top: 16, right: 16,
     backgroundColor: C.secondary, paddingHorizontal: 16, paddingVertical: 6,
@@ -306,32 +324,33 @@ const s = StyleSheet.create({
 
   infoCard: {
     backgroundColor: C.surfaceContainer, borderWidth: 4, borderColor: '#000',
-    padding: 20,
+    padding: IS_TABLET ? 28 : 20,
     shadowColor: C.primary, shadowOffset: { width: 8, height: 8 }, shadowOpacity: 1, shadowRadius: 0,
     elevation: 8, transform: [{ rotate: '-1deg' }],
   },
-  recipeTitle: { fontWeight: '900', fontSize: 28, color: C.primary, textTransform: 'uppercase', lineHeight: 28 },
-  metaRow: { flexDirection: 'row', gap: 16, marginTop: 6 },
-  metaText: { fontSize: 12, color: C.secondaryFixed, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
-  recipeDesc: { fontSize: 14, color: C.onSurfaceVariant, marginTop: 10, lineHeight: 20 },
-  aiDisclaimer: { fontSize: 11, color: C.textMuted, marginTop: 10, fontStyle: 'italic' },
+  recipeTitle: { fontWeight: '900', fontSize: IS_TABLET ? 36 : 28, color: C.primary, textTransform: 'uppercase', lineHeight: IS_TABLET ? 40 : 28 },
+  metaRow: { flexDirection: 'row', gap: 16, marginTop: IS_TABLET ? 10 : 6 },
+  metaText: { fontSize: IS_TABLET ? 14 : 12, color: C.secondaryFixed, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  recipeDesc: { fontSize: IS_TABLET ? 16 : 14, color: C.onSurfaceVariant, marginTop: IS_TABLET ? 14 : 10, lineHeight: IS_TABLET ? 26 : 20 },
+  aiDisclaimer: { fontSize: IS_TABLET ? 13 : 11, color: C.textMuted, marginTop: IS_TABLET ? 14 : 10, fontStyle: 'italic' },
 
   primaryCta: {
-    backgroundColor: C.primary, paddingVertical: 22, borderRadius: 999,
+    backgroundColor: C.primary, paddingVertical: IS_TABLET ? 26 : 22, borderRadius: 999,
     borderWidth: 4, borderColor: '#000', alignItems: 'center',
-    alignSelf: 'center', paddingHorizontal: 32,
+    alignSelf: IS_TABLET ? 'stretch' : 'center',
+    paddingHorizontal: IS_TABLET ? 20 : 32,
     shadowColor: '#000', shadowOffset: { width: 6, height: 6 }, shadowOpacity: 1, shadowRadius: 0,
     elevation: 6,
   },
-  primaryCtaText: { fontWeight: '900', fontSize: 20, color: C.onPrimary, fontStyle: 'italic', textTransform: 'uppercase' },
+  primaryCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 22 : 20, color: C.onPrimary, fontStyle: 'italic', textTransform: 'uppercase' },
 
   secondaryCta: {
-    backgroundColor: C.tertiaryContainer, paddingVertical: 18, borderRadius: 0,
+    backgroundColor: C.tertiaryContainer, paddingVertical: IS_TABLET ? 22 : 18, borderRadius: 0,
     borderWidth: 4, borderColor: '#000', alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 4, height: 4 }, shadowOpacity: 1, shadowRadius: 0,
     elevation: 4,
   },
-  secondaryCtaText: { fontWeight: '900', fontSize: 15, color: C.onTertiaryContainer, textTransform: 'uppercase', letterSpacing: 1 },
+  secondaryCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 17 : 15, color: C.onTertiaryContainer, textTransform: 'uppercase', letterSpacing: 1 },
 });
 
 const p = StyleSheet.create({
@@ -357,32 +376,32 @@ const p = StyleSheet.create({
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 18, paddingVertical: 14,
+    paddingHorizontal: IS_TABLET ? 24 : 18, paddingVertical: IS_TABLET ? 18 : 14,
   },
 
   label: {
-    fontWeight: '900', fontSize: 18, letterSpacing: 2, fontStyle: 'italic',
+    fontWeight: '900', fontSize: IS_TABLET ? 22 : 18, letterSpacing: 2, fontStyle: 'italic',
     textShadowColor: '#000', textShadowOffset: { width: 2, height: 2 }, textShadowRadius: 0,
   },
 
   togglePill: {
-    width: 36, height: 36, borderRadius: 0,
+    width: IS_TABLET ? 42 : 36, height: IS_TABLET ? 42 : 36, borderRadius: 0,
     borderWidth: 3, borderColor: '#000',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 3, height: 3 }, shadowOpacity: 1, shadowRadius: 0,
     elevation: 3,
   },
-  toggleText: { fontWeight: '900', fontSize: 22, color: '#000', lineHeight: 24 },
+  toggleText: { fontWeight: '900', fontSize: IS_TABLET ? 26 : 22, color: '#000', lineHeight: IS_TABLET ? 28 : 24 },
 
   divider: { height: 3, marginHorizontal: 0 },
 
-  body: { paddingHorizontal: 18, paddingVertical: 14, gap: 10 },
+  body: { paddingHorizontal: IS_TABLET ? 24 : 18, paddingVertical: IS_TABLET ? 18 : 14, gap: IS_TABLET ? 14 : 10 },
 
-  row: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  row: { flexDirection: 'row', gap: IS_TABLET ? 14 : 10, alignItems: 'flex-start' },
 
-  bullet: { fontWeight: '900', fontSize: 17, minWidth: 26, paddingTop: 1 },
+  bullet: { fontWeight: '900', fontSize: IS_TABLET ? 19 : 17, minWidth: IS_TABLET ? 30 : 26, paddingTop: 1 },
 
-  itemText: { flex: 1, fontSize: 17, color: C.onSurface, lineHeight: 26 },
+  itemText: { flex: 1, fontSize: IS_TABLET ? 19 : 17, color: C.onSurface, lineHeight: IS_TABLET ? 30 : 26 },
 
   emptyText: { fontSize: 15, color: C.onSurfaceVariant, fontStyle: 'italic' },
 });

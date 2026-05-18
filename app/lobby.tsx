@@ -20,6 +20,7 @@ import { fetchDivisionRecipes } from '@/lib/supabase';
 import { type Division, BRACKET_SIZE } from '@/lib/tournament';
 import { C } from '@/constants/colors';
 import { s } from '@/styles/lobby.styles';
+import { useLayout } from '@/constants/layout';
 import * as Notifications from 'expo-notifications';
 import { requestNotificationPermission, scheduleRotationNotifications } from '@/lib/notifications';
 import { useLobbyStore } from '@/store/lobby';
@@ -37,10 +38,15 @@ function formatCountdownParts(targetMs: number, now: number) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
+const MAX_CONTENT_W = 1060;
+
 export default function LobbyScreen() {
   const router = useRouter();
+  const { isTablet, screenWidth } = useLayout();
+  // Full-width contentContainer; symmetric padding centers the content visually.
+  const hPad = isTablet ? Math.max(28, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 20;
   const { setDivision, startGauntlet } = useTournamentStore();
-  const { dietaryProfile } = useUserStore();
+  const { dietaryProfile, notifPromptSeen, markNotifPromptSeen } = useUserStore();
   const { divisions, rotationTimes, loading: loadingDivisions, error: storeError, prefetch } = useLobbyStore();
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,11 +64,11 @@ export default function LobbyScreen() {
   }, []);
 
   useEffect(() => {
-    // Check notification permission — if not granted, show explain-first sheet
+    if (notifPromptSeen) return;
     Notifications.getPermissionsAsync()
       .then(({ status }) => { if (status !== 'granted') setShowNotifPrompt(true); })
       .catch(() => {});
-  }, []);
+  }, [notifPromptSeen]);
 
   // Schedule notifications once we know both division names and rotation times
   useEffect(() => {
@@ -103,8 +109,7 @@ export default function LobbyScreen() {
 
   return (
     <SafeAreaView style={s.root}>
-      <View style={s.centeredWrapper}>
-      {/* Header */}
+      {/* Header — full screen width, content self-centers */}
       <View style={s.header}>
         <Text style={s.wordmark}>PLATEOFFS</Text>
       </View>
@@ -113,12 +118,17 @@ export default function LobbyScreen() {
         visible={showNotifPrompt}
         onEnable={() => {
           setShowNotifPrompt(false);
+          markNotifPromptSeen();
           requestNotificationPermission().catch(() => {});
         }}
-        onDismiss={() => setShowNotifPrompt(false)}
+        onDismiss={() => {
+          setShowNotifPrompt(false);
+          markNotifPromptSeen();
+        }}
       />
 
-      <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
+      {/* ScrollView spans the full screen width so you can scroll anywhere */}
+      <ScrollView style={s.scroll} contentContainerStyle={[s.content, { paddingHorizontal: hPad }]} showsVerticalScrollIndicator={false}>
         {/* Title */}
         <Text style={s.title}>SELECT{'\n'}YOUR{'\n'}ARENA</Text>
 
@@ -132,7 +142,7 @@ export default function LobbyScreen() {
         )}
 
         {/* Division cards */}
-        <View style={s.cardList}>
+        <View style={[s.cardList, isTablet && lt.cardListTablet]}>
           {loadingDivisions ? (
             <ActivityIndicator color={C.trophyGold} size="large" style={{ marginVertical: 40 }} />
           ) : (
@@ -140,16 +150,17 @@ export default function LobbyScreen() {
               const slotKey = div.division_type === 'anchor' ? 'ANCHOR' : (div.slot?.toUpperCase() ?? '');
               const rotatesAt = rotationTimes[slotKey] ?? null;
               return (
-                <DivisionCard
-                  key={div.id}
-                  division={div}
-                  loading={loadingId === div.id}
-                  disabled={loadingId !== null}
-                  onPress={() => handleSelectDivision(div)}
-                  index={i}
-                  rotatesAt={rotatesAt}
-                  now={now}
-                />
+                <View key={div.id} style={isTablet ? lt.cardWrapper : null}>
+                  <DivisionCard
+                    division={div}
+                    loading={loadingId === div.id}
+                    disabled={loadingId !== null}
+                    onPress={() => handleSelectDivision(div)}
+                    index={i}
+                    rotatesAt={rotatesAt}
+                    now={now}
+                  />
+                </View>
               );
             })
           )}
@@ -157,7 +168,6 @@ export default function LobbyScreen() {
 
         <AppFooter />
       </ScrollView>
-      </View>
     </SafeAreaView>
   );
 }
@@ -664,6 +674,12 @@ function DivisionCard({
     </TouchableOpacity>
   );
 }
+
+// Tablet grid layout for card list
+const lt = StyleSheet.create({
+  cardListTablet: { flexDirection: 'row', flexWrap: 'wrap', gap: 20 },
+  cardWrapper: { width: '48.5%' },
+});
 
 // Styles only used by card sub-components
 const cs = StyleSheet.create({

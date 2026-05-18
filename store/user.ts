@@ -6,14 +6,17 @@ export type DietaryTag = 'vegetarian' | 'vegan' | 'gluten_free' | 'no_pork' | 'd
 
 interface UserState {
   dietaryProfile: DietaryTag[];
+  notifPromptSeen: boolean;
   setDietaryProfile: (tags: DietaryTag[]) => void;
   toggleDietaryTag: (tag: DietaryTag) => void;
+  markNotifPromptSeen: () => void;
 }
 
 export const useUserStore = create<UserState>()(
   persist(
     (set, get) => ({
       dietaryProfile: [],
+      notifPromptSeen: false,
 
       setDietaryProfile: (tags) => set({ dietaryProfile: tags }),
 
@@ -24,6 +27,8 @@ export const useUserStore = create<UserState>()(
           : [...current, tag];
         set({ dietaryProfile: next });
       },
+
+      markNotifPromptSeen: () => set({ notifPromptSeen: true }),
     }),
     {
       name: 'plateoffs-user',

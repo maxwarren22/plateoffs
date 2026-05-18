@@ -1,0 +1,36 @@
+{
+  "configVersion": 0,
+  "apple": {
+    "info": {
+      "en-US": {
+        "title": "Plateoffs",
+        "subtitle": "Recipe and Meal Ideas",
+        "description": "CAN'T DECIDE WHAT'S FOR DINNER?\n\nPlateoffs turns the nightly debate into a game. Pick an arena, vote recipe vs. recipe in head-to-head matchups, and crown a champion — then cook it tonight.\n\nHOW IT WORKS\n\nChoose a division from the lobby, then face off eight recipes in a bracket-style gauntlet. Tap the recipe you'd rather eat. The last one standing is your dinner.\n\nALWAYS SOMETHING NEW\n\nDivisions rotate on a regular schedule so there's always a fresh bracket waiting. Get notified the moment a new arena drops and never run out of ideas.\n\nCOOK WHAT YOU ACTUALLY EAT\n\nFilter any division by dietary preference before you start — vegetarian, vegan, gluten-free, dairy-free, or no pork. The bracket curates itself around you.\n\nSAVE YOUR WINNER\n\nWhen you crown a champion, save it directly to Curate My Plate with one tap. Your recipe is ready to cook with full ingredients and step-by-step instructions.\n\nPlateoffs is free.",
+        "keywords": [
+          "meal ideas",
+          "food tournament",
+          "what to cook",
+          "meal planner",
+          "recipe tool",
+          "dinner ideas",
+          "cooking app"
+        ],
+        "promoText": "Can't agree on dinner? Let Plateoffs decide. Vote on recipes, crown a champion, and cook it tonight — free.",
+        "privacyPolicyUrl": "https://curatemyplate.com/privacy",
+        "supportUrl": "https://curatemyplate.com/support"
+      }
+    },
+    "release": {
+      "en-US": {
+        "releaseNotes": "Welcome to Plateoffs! Pick your arena, vote recipe vs. recipe, and crown tonight's dinner champion."
+      }
+    },
+    "categories": ["FOOD_AND_DRINK"],
+    "review": {
+      "firstName": "Max",
+      "lastName": "Warren",
+      "email": "max@curatemyplate.ca",
+      "phone": "647-212-3569"
+    }
+  }
+}

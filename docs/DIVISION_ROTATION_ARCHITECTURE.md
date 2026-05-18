@@ -118,8 +118,8 @@ create table division_catalog (
   active_months    int[],               -- [1..12], null = all months eligible
   display_order    int not null default 99,
   cover_image_url  text,
-  recipe_ids       uuid[],              -- full pool, populated by curation function
-  last_curated_at  timestamptz,
+  rotation_index   integer default 0,  -- current position in division_recipe_bank; advanced each anchor epoch
+  last_curated_at  timestamptz,        -- updated each time the bank grows
   created_at       timestamptz default now()
 );
 
@@ -127,6 +127,29 @@ create table division_catalog (
 alter table division_catalog enable row level security;
 create policy "Public read access" on division_catalog for select using (true);
 ```
+
+### New Table: `division_recipe_bank`
+
+One row per recipe per division. This is the bank — a curated set of up to 250 recipes
+per division. `rotate-divisions` slices it using `rotation_index` to produce the active
+window. Once full, curation stops permanently and the window just cycles forever.
+
+```sql
+create table division_recipe_bank (
+  id         uuid        primary key default gen_random_uuid(),
+  catalog_id uuid        not null references division_catalog(id) on delete cascade,
+  recipe_id  uuid        not null references recipes(id),
+  sort_order integer     not null,   -- rotation sequence; new entries append at the end
+  added_at   timestamptz not null default now(),
+  unique (catalog_id, recipe_id)
+);
+
+create index on division_recipe_bank (catalog_id, sort_order);
+```
+
+**Curation writes here, not to the main `recipes` table.** New AI-generated recipes are
+inserted into `recipes` (building the public catalog) and then also registered here.
+Existing recipes matched by name from the public catalog are registered here directly.
 
 ### New Table: `app_config`
 
@@ -200,113 +223,84 @@ alter table recipes
 Checks if any slot's epoch has advanced. Only acts on slots that have actually changed.
 
 **Responsibilities:**
-1. Compute current R1/R2/R3 epochs from `EPOCH_ZERO`
+1. Compute current R1/R2/R3/R4 epochs from `EPOCH_ZERO`
 2. Compare against stored epochs in `app_config`
-3. For each slot whose epoch has advanced:
+3. For each rotating slot whose epoch has advanced:
    - Deactivate the previous division for that slot in `plateoffs_divisions`
    - Activate (or insert) the newly selected division
-   - Call `curate-division-recipes` if the division hasn't been curated yet
-4. Update `app_config` with new epochs and `next_*_rotation_at` values
+   - Trigger `curate-division-recipes` if the new division has < 8 recipes
+4. On each anchor epoch advance (5-day cycle):
+   - Slide the **active window** forward through each anchor's recipe bank
+   - Trigger `curate-division-recipes` for anchors whose bank is below `MAX_BANK_SIZE`
+5. Retry any active divisions still below `BRACKET_SIZE` (catches timed-out curation jobs)
+6. Update `app_config` with new epochs and `next_*_rotation_at` values
 
-**Pseudocode:**
-```typescript
-const epochZero = new Date('2025-06-01T00:00:00Z').getTime() / 1000;
-const now = Math.floor(Date.now() / 1000);
-
-const r1Epoch     = Math.floor((now - epochZero) / 259200);
-const r2Epoch     = Math.floor((now - epochZero) / 604800);
-const r3Epoch     = Math.floor((now - epochZero) / 432000);
-const r4Epoch     = Math.floor((now - epochZero) / 345600);
-const anchorEpoch = Math.floor((now - epochZero) / 432000);  // 5 days
-
-const stored = await getAppConfig(['r1_epoch', 'r2_epoch', 'r3_epoch', 'r4_epoch', 'anchor_epoch']);
-
-if (r1Epoch     > Number(stored.r1_epoch))     await rotateSlot('R1', r1Epoch, cuisinePool);
-if (r2Epoch     > Number(stored.r2_epoch))     await rotateSlot('R2', r2Epoch, getSeasonalPool(currentMonth()));
-if (r3Epoch     > Number(stored.r3_epoch))     await rotateSlot('R3', r3Epoch, wildcardPool);
-if (r4Epoch     > Number(stored.r4_epoch))     await rotateSlot('R4', r4Epoch, dessertPool);
-if (anchorEpoch > Number(stored.anchor_epoch)) await refreshAnchorRecipes(anchorEpoch);
-
-await updateAppConfig({ r1_epoch: r1Epoch, r2_epoch: r2Epoch, r3_epoch: r3Epoch, r4_epoch: r4Epoch, anchor_epoch: anchorEpoch, ... });
+**Anchor window rotation:**
 ```
+ANCHOR_WINDOW_SIZE = 40
+
+// division_catalog.rotation_index persists where we are in the bank
+window = bank[rotation_index : rotation_index + ANCHOR_WINDOW_SIZE]  (wraps)
+next_rotation_index = (rotation_index + ANCHOR_WINDOW_SIZE) % bank.length
+
+// Written back to division_catalog each epoch
+```
+`rotation_index` is persisted on `division_catalog` so it survives restarts and bank
+growth. Each 5-day epoch the index advances by 40. Once the bank reaches 250 recipes
+the full bank cycles in ~6 epochs (~30 days) before any recipe repeats in the active set.
 
 ---
 
 ### `curate-division-recipes` (called by `rotate-divisions`, also callable manually)
 
-Given a division catalog entry, builds a recipe pool large enough to guarantee ≥ 8 recipes for every dietary profile.
+Grows a division's recipe bank in `division_catalog`. **Does not generate images** —
+image generation is handled by `backfill-recipe-images` after insert.
 
-**Multi-Pass Generation Strategy:**
+**Bank sizing constants:**
+| Constant | Value | Meaning |
+|---|---|---|
+| `INITIAL_BANK_TARGET` | 40 | Fill to this on first run |
+| `GROWTH_BATCH` | 10 | New recipes added per subsequent cycle |
+| `MAX_BANK_SIZE` | 250 | Stop generating; window cycles forever |
+| `RESOLVE_BATCH_SIZE` | 5 | Recipes processed per sequential batch |
 
-**Pass 1 — Broad generation:**
-Ask Gemini for up to 20 on-theme recipes, naturally diverse in style and dietary compatibility.
+**Bank lifecycle:**
+- **Initial fill** (`bank < 40`): broad Pass 1 generation (up to 20 recipes) + gap-fill passes until every dietary profile has ≥ 8 qualifying recipes
+- **Growth mode** (`40 ≤ bank < 250`): add `GROWTH_BATCH` fresh recipes per cycle, passing existing recipe names to Gemini to avoid near-duplicates
+- **Full** (`bank ≥ 250`): skip generation, return immediately
 
-**Pass 2 — Gap analysis:**
-For each dietary profile, count qualifying recipes. Identify any profile with < 8.
-
-**Pass 3 — Targeted fill:**
-For each under-covered profile, prompt Gemini:
-> *"Generate [N] more [division theme] recipes that are strictly [vegan / gluten-free / etc.]. They must feel authentic to the division — e.g. if the division is Protein Throne, propose plant-based high-protein dishes like tempeh, lentils, edamame."*
-
-Repeat passes 2–3 until all profiles reach 8.
+At **~6 months** of 5-day anchor cycles, each anchor bank reaches ≈ 250 recipes — enough to go roughly a year before a recipe repeats in the active 40-recipe window.
 
 **For each proposed recipe:**
 1. Search `recipes` by name (`ilike`) for an existing match
-2. If found: tag it with appropriate `dietary_tags`, add its ID to the pool
-3. If not found: generate full recipe details + image via Gemini, insert into `recipes`, upload image to `recipe-images` bucket
+2. If found: merge `dietary_tags`, add ID to bank
+3. If not: generate full recipe details via Gemini (text only), insert into `recipes`, add ID to bank
+4. Process in sequential batches of `RESOLVE_BATCH_SIZE` to avoid Edge Function timeout
 
-**Gemini Recipe Generation Prompt (Pass 1):**
-```
-You are a culinary curator for a food tournament app called Plateoffs.
+**After all recipes are resolved:**
+- Write updated `recipe_ids` to `division_catalog`
+- Sync `plateoffs_divisions.recipe_ids = full bank` for any active row linked to this catalog entry
+  *(for anchors this is overwritten by the next window rotation; for rotating divisions the full bank is immediately playable)*
+- Fire-and-forget `backfill-recipe-images` for newly inserted recipe IDs
 
-Division: "{name}" — {description}
+---
 
-Propose exactly 20 recipes that would compete in this bracket. The set must include:
-- At least 8 that are vegan
-- At least 8 that are gluten-free
-- At least 8 that contain no pork
-- At least 8 that are dairy-free
-- At least 8 that are vegetarian
-(Many recipes will satisfy multiple criteria simultaneously — optimize for overlap.)
+### `backfill-recipe-images` (called by `curate-division-recipes`, also callable manually)
 
-Each recipe should be iconic or beloved within the theme, have strong visual appeal,
-vary in technique/style, and be a real named dish.
+Generates and uploads images for AI recipes that are missing them. Decoupled from
+curation so a slow image generation run never blocks recipe insertion.
 
-Return JSON array:
-[{
-  "name": string,
-  "description": string,
-  "cook_time_minutes": number,
-  "skill_level": "easy"|"medium"|"hard",
-  "tags": string[],
-  "meal_type_tags": string[],
-  "dietary_tags": ("vegetarian"|"vegan"|"gluten_free"|"no_pork"|"dairy_free")[]
-}]
-```
+**Accepts:**
+- `recipe_ids: string[]` (optional) — scope to specific recipes; omit to process any AI recipe missing an image
+- `limit: number` (default 20) — max recipes to process per invocation
 
-**Gemini Image Generation Prompt:**
-```
-Professional food photography of {recipe_name}.
-Top-down shot on a {surface} surface.
-Natural window light. Garnished and plated for a restaurant menu.
-Photorealistic, high resolution, appetizing.
-```
+**Process:**
+1. Query `recipes` where `source = 'ai'` and `image_path IS NULL`, filtered to provided IDs if given
+2. Generate images via Gemini in parallel batches of 3
+3. Upload each image to `recipe-images` storage bucket at `ai-generated/{id}.png`
+4. Update `recipes.image_path`
 
-**Recipe Insert Schema:**
-```typescript
-{
-  name: string,
-  description: string,
-  total_time_minutes: number,
-  skill_level: 'easy' | 'medium' | 'hard',
-  tags: string[],
-  meal_type_tags: string[],
-  dietary_tags: string[],
-  image_path: string,
-  source: 'ai_generated',
-  created_at: now()
-}
-```
+Can be called repeatedly — idempotent, skips any recipe that already has an image.
 
 ---
 
@@ -454,27 +448,40 @@ Countdown label: **"NEXT ROTATION IN:"** (replaces "NEXT BATCH OF BRAWLS DROPPIN
 - [ ] Add dietary preference UI (onboarding or settings screen)
 
 ### Phase 3 — `curate-division-recipes` Edge Function
-- [ ] Create Edge Function scaffold with Gemini API integration
-- [ ] Implement Pass 1 broad generation with dietary coverage targets
-- [ ] Implement gap analysis per dietary profile
-- [ ] Implement targeted fill passes until all profiles reach 8
-- [ ] Implement recipe name matching → conditional insert flow
-- [ ] Implement Gemini image generation + Supabase Storage upload
-- [ ] Test manually against a single division
+- [x] Create Edge Function scaffold with Gemini API integration
+- [x] Implement Pass 1 broad generation with dietary coverage targets
+- [x] Implement gap analysis per dietary profile
+- [x] Implement targeted fill passes until all profiles reach 8
+- [x] Implement recipe name matching → conditional insert flow
+- [x] Batch sequential resolution (5 at a time) to avoid Edge Function timeout
+- [x] Growth mode: add 10 fresh recipes per cycle, passing existing names to avoid near-duplicates
+- [x] Bank cap: skip generation once bank reaches 250 recipes
+- [x] Sync `plateoffs_divisions.recipe_ids` after curation so divisions are immediately playable
+- [x] Fire-and-forget `backfill-recipe-images` for newly inserted IDs
 
 ### Phase 4 — `rotate-divisions` Edge Function
-- [ ] Implement per-slot epoch computation (R1/R2/R3 independent intervals)
-- [ ] Compare current epochs to stored epochs in `app_config`
-- [ ] Implement division deactivation / activation per slot
-- [ ] Wire call to `curate-division-recipes` per new division
-- [ ] Write updated epochs and `next_*_rotation_at` to `app_config`
-- [ ] Schedule via Supabase Cron (run hourly, act only when epoch advances)
+- [x] Implement per-slot epoch computation (R1/R2/R3/R4 independent intervals)
+- [x] Compare current epochs to stored epochs in `app_config`
+- [x] Implement division deactivation / activation per slot
+- [x] Wire call to `curate-division-recipes` per new division
+- [x] Write updated epochs and `next_*_rotation_at` to `app_config`
+- [x] Schedule via Supabase Cron (run hourly, act only when epoch advances)
+- [x] Anchor window rotation: slide 40-recipe window through bank each epoch
+- [x] Trigger growth curation for anchors until bank reaches MAX_BANK_SIZE
 
-### Phase 5 — Seeding & Backfill
-- [ ] Run `curate-division-recipes` against all 4 anchor divisions
+### Phase 5 — `backfill-recipe-images` Edge Function
+- [x] Create Edge Function for async image generation
+- [x] Accept `recipe_ids[]` for targeted backfill or run globally with `limit`
+- [x] Process in parallel batches of 3 to balance speed vs. timeout
+- [x] Idempotent: skip recipes that already have images
+
+### Phase 6 — Seeding & Backfill
+- [ ] Run migration `004_recipe_bank_growth.sql`
+- [ ] Run `curate-division-recipes` against all 4 anchor divisions (initial fill)
 - [ ] Dry-run `rotate-divisions` against current epoch to populate first rotating set
-- [ ] Verify lobby displays correct 7 divisions with working countdown
+- [ ] Verify lobby displays correct 8 divisions with working countdown
 - [ ] Verify dietary filtering returns correct 8 recipes per profile
+- [ ] Confirm `backfill-recipe-images` fills images for all AI-generated recipes
 
 ---
 

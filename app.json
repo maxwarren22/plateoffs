@@ -18,11 +18,19 @@
       "bundleIdentifier": "com.curatemyplate.plateoffs",
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
+          "curatemyplate",
           "curatemyplate"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       },
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "CA92.1"
+            ]
+          },
           {
             "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
             "NSPrivacyAccessedAPITypeReasons": [

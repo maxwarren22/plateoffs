@@ -1,0 +1,27 @@
+# Dependencies — EAS installs these fresh on the build server
+node_modules/
+
+# Expo local cache
+.expo/
+
+# Local build output
+dist/
+web-build/
+
+# Scripts and generated assets — not needed for the app build
+scripts/
+docs/
+memory/
+supabase/
+
+# Reference images (not part of the app or metadata)
+Gemini_Generated_Image_*.png
+
+# Environment and secrets
+.env*.local
+
+# macOS
+.DS_Store
+
+# TypeScript
+*.tsbuildinfo
