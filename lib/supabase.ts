@@ -101,6 +101,17 @@ export async function fetchDivisionRecipes(
   return data.slice(0, BRACKET_SIZE).map(dbRowToRecipe);
 }
 
+export async function fetchRecipeImageUrls(ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  const { data } = await supabase
+    .from('recipes')
+    .select('image_path')
+    .in('id', ids);
+  return (data ?? [])
+    .map((r: any) => imagePathToUrl(r.image_path))
+    .filter((url): url is string => !!url);
+}
+
 export async function fetchNextRotationAt(): Promise<number> {
   const { data, error } = await supabase
     .from('app_config')

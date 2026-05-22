@@ -1,11 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
-  Image,
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Animated,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -20,11 +21,18 @@ export default function MatchupScreen() {
     division,
     leftRecipe,
     rightRecipe,
+    remainingRecipes,
     matchupCount,
     totalMatchups,
     champion,
     selectWinner,
   } = useTournamentStore();
+
+  // Prefetch the next recipe's image so it's cached before the user taps a winner.
+  useEffect(() => {
+    const next = remainingRecipes[0];
+    if (next?.image_url) Image.prefetch(next.image_url).catch(() => {});
+  }, [remainingRecipes[0]?.id]);
 
   useEffect(() => {
     if (champion) {
@@ -163,11 +171,49 @@ function RecipeCard({
   label: string;
   onSelect: () => void;
 }) {
+  const imageOpacity = useRef(new Animated.Value(0)).current;
+  // Tracks which recipe ID's image has finished loading — used to handle
+  // the race where a cached image's onLoad fires before the useEffect reset.
+  const loadedIdRef = useRef<string | null>(null);
+
+  const animateIn = () => {
+    Animated.timing(imageOpacity, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  useEffect(() => {
+    imageOpacity.setValue(0);
+    if (!recipe.image_url) {
+      imageOpacity.setValue(1);
+      return;
+    }
+    // If onLoad already fired for this recipe (race: cached image loaded before
+    // this effect ran), animate in now rather than waiting for a callback that
+    // will never fire again.
+    if (loadedIdRef.current === recipe.id) {
+      animateIn();
+    }
+  }, [recipe.id]);
+
+  function handleImageReady() {
+    loadedIdRef.current = recipe.id;
+    animateIn();
+  }
+
   const content = (
     <>
       <View style={s.cardImageContainer}>
         {recipe.image_url ? (
-          <Image source={{ uri: recipe.image_url }} style={s.cardImage} resizeMode="cover" />
+          <Animated.Image
+            source={{ uri: recipe.image_url }}
+            style={[s.cardImage, { opacity: imageOpacity }]}
+            resizeMode="cover"
+            onLoad={handleImageReady}
+            onError={handleImageReady}
+          />
         ) : (
           <View style={s.cardImagePlaceholder}>
             <Text style={{ fontSize: 40 }}>🍽️</Text>
@@ -181,9 +227,9 @@ function RecipeCard({
       </View>
 
       <View style={[s.cardInfo, imageRight && s.cardInfoRight]}>
-        <Text style={[s.cardTitle, { color: accent }]}>{recipe.title.toUpperCase()}</Text>
+        <Text style={[s.cardTitle, { color: accent }]}>{(recipe.title ?? '').toUpperCase()}</Text>
         <View style={s.tagRow}>
-          {recipe.tags?.slice(0, 2).map((tag) => (
+          {recipe.tags?.filter(Boolean).slice(0, 2).map((tag) => (
             <View key={tag} style={s.tag}>
               <Text style={s.tagText}>#{tag.toUpperCase()}</Text>
             </View>
@@ -326,7 +372,7 @@ const s = StyleSheet.create({
     shadowRadius: 0,
     elevation: 10,
   },
-  cardImageContainer: { width: '45%', height: '100%', backgroundColor: '#000' },
+  cardImageContainer: { width: '45%', height: '100%', backgroundColor: '#1a0d00' },
   cardImage: { width: '100%', height: '100%' },
   cardImagePlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   levelBadge: {

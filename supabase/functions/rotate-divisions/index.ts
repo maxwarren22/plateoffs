@@ -283,13 +283,13 @@ Deno.serve(async (req) => {
           activated.push(result.slug)
           pendingCount++
         }
-        configUpdates.push(
-          { key: `${slot.key}_epoch`,            value: String(epoch) },
-          { key: `next_${slot.key}_rotation_at`, value: nextRotationAt(epoch, slot.intervalSec) }
-        )
+        configUpdates.push({ key: `${slot.key}_epoch`, value: String(epoch) })
       } else {
         console.log(`Slot ${slot.key} unchanged (epoch ${epoch})`)
       }
+
+      // Always refresh the next-rotation timestamp so the lobby timer never shows stale data
+      configUpdates.push({ key: `next_${slot.key}_rotation_at`, value: nextRotationAt(epoch, slot.intervalSec) })
     }
 
     const anchorEpoch = currentEpoch(ANCHOR_INTERVAL_SEC)
@@ -298,13 +298,13 @@ Deno.serve(async (req) => {
     if (anchorEpoch > storedAnchorEpoch) {
       console.log(`Anchor epoch advanced: ${storedAnchorEpoch} → ${anchorEpoch}`)
       await refreshAnchorWindows(supabase)
-      configUpdates.push(
-        { key: 'anchor_epoch',            value: String(anchorEpoch) },
-        { key: 'next_anchor_rotation_at', value: nextRotationAt(anchorEpoch, ANCHOR_INTERVAL_SEC) }
-      )
+      configUpdates.push({ key: 'anchor_epoch', value: String(anchorEpoch) })
     } else {
       console.log(`Anchor unchanged (epoch ${anchorEpoch})`)
     }
+
+    // Always refresh anchor timer
+    configUpdates.push({ key: 'next_anchor_rotation_at', value: nextRotationAt(anchorEpoch, ANCHOR_INTERVAL_SEC) })
 
     if (configUpdates.length) await updateAppConfig(supabase, configUpdates)
 

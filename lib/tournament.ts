@@ -19,6 +19,7 @@ export interface Division {
   catalog_id: string | null;
   division_type: 'anchor' | 'rotating';
   slot: string | null;
+  curation_pending: boolean;
 }
 
 export function buildBracket(recipes: Recipe[]): Recipe[][] {

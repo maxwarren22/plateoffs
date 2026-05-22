@@ -273,7 +273,7 @@ Grows a division's recipe bank. Returns synchronously with a full result after c
 2. **Insert phase (parallel):** for new recipes only:
    - Text details (Gemini 2.5 Flash) and image (Gemini 2.5 Flash Image) generated **in parallel**
    - Recipe inserted into `recipes` with `source = 'ai'`, `is_public = true`
-   - Image uploaded to `recipe-images/ai-generated/{id}.png`, `image_path` set immediately
+   - Image compressed to WebP and uploaded to `recipe-images/permanent/ai-generated/{id}.webp`, `image_path` set immediately
 3. **Tag phase (parallel):** merge `dietary_tags` on matched existing recipes
 4. **Bank phase (sequential):** insert into `division_recipe_bank` with deterministic `sort_order`
 
@@ -296,7 +296,7 @@ A safety net for any images that failed during inline generation in `curate-divi
 
 **Global scan scope:** queries `division_recipe_bank` for recipe IDs first, then filters `recipes` to `source = 'ai' AND image_path IS NULL` within that set. This avoids touching the thousands of seeded CMP recipes that have nothing to do with Plateoffs.
 
-**Process:** parallel batches of 5 images → upload to `recipe-images/ai-generated/{id}.png` → update `image_path`.
+**Process:** parallel batches of 5 images → compress to WebP → upload to `recipe-images/permanent/ai-generated/{id}.webp` → update `image_path`.
 
 ---
 

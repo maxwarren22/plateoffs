@@ -81,6 +81,22 @@ Deno.serve(async (req) => {
         } else {
           console.log(`Curation complete for ${division.slug}: bank=${body.bankSize}`)
           results.push({ slug: division.slug, ok: true, bankSize: body.bankSize })
+
+          // Trigger image backfill for this division after curation succeeds
+          if (body.catalog_id) {
+            fetch(
+              `${SUPABASE_URL}/functions/v1/backfill-recipe-images`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                  apikey: SUPABASE_ANON_KEY,
+                },
+                body: JSON.stringify({ catalog_id: body.catalog_id, limit: 10 }),
+              }
+            ).catch(err => console.error(`Image backfill trigger failed for ${division.slug}:`, err))
+          }
         }
       } catch (err) {
         console.error(`Curation failed for ${division.slug}:`, err)

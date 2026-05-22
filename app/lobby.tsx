@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -16,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTournamentStore } from '@/store/tournament';
 import { useUserStore, type DietaryTag } from '@/store/user';
-import { fetchDivisionRecipes } from '@/lib/supabase';
+import { fetchDivisionRecipes, fetchRecipeImageUrls } from '@/lib/supabase';
 import { type Division, BRACKET_SIZE } from '@/lib/tournament';
 import { C } from '@/constants/colors';
 import { s } from '@/styles/lobby.styles';
@@ -47,15 +48,24 @@ export default function LobbyScreen() {
   const hPad = isTablet ? Math.max(28, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 20;
   const { setDivision, startGauntlet } = useTournamentStore();
   const { dietaryProfile, notifPromptSeen, markNotifPromptSeen } = useUserStore();
-  const { divisions, rotationTimes, loading: loadingDivisions, error: storeError, prefetch } = useLobbyStore();
+  const { divisions, rotationTimes, loading: loadingDivisions, error: storeError, prefetch, refresh } = useLobbyStore();
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [showNotifPrompt, setShowNotifPrompt] = useState(false);
 
-  // Kick off fetch if somehow not started (e.g. deep-linked directly to lobby)
-  useEffect(() => { prefetch(); }, []);
+  // Initial load via prefetch (no-ops if already loaded).
+  // On subsequent focus events (returning from match/champion), silently refresh recipe_ids.
+  const hasLoaded = useRef(false);
+  useFocusEffect(useCallback(() => {
+    if (!hasLoaded.current) {
+      hasLoaded.current = true;
+      prefetch();
+    } else {
+      refresh();
+    }
+  }, []));
 
   // Tick every second so per-card timers stay live
   useEffect(() => {
@@ -69,6 +79,15 @@ export default function LobbyScreen() {
       .then(({ status }) => { if (status !== 'granted') setShowNotifPrompt(true); })
       .catch(() => {});
   }, [notifPromptSeen]);
+
+  // Prefetch recipe images for all divisions while the user browses the lobby.
+  useEffect(() => {
+    if (!divisions.length) return;
+    const ids = divisions.flatMap((d) => (d.recipe_ids ?? []).slice(0, BRACKET_SIZE));
+    fetchRecipeImageUrls(ids)
+      .then((urls) => { urls.forEach((url) => Image.prefetch(url).catch(() => {})); })
+      .catch(() => {});
+  }, [divisions.length]);
 
   // Schedule notifications once we know both division names and rotation times
   useEffect(() => {
@@ -89,14 +108,9 @@ export default function LobbyScreen() {
     setError(null);
     try {
       const recipes = await fetchDivisionRecipes(div, dietaryProfile);
-      await Promise.all(
-        recipes
-          .map((r) => r.image_url)
-          .filter((url): url is string => !!url)
-          .map((url) => Image.prefetch(url))
-      );
       setDivision(div);
       startGauntlet(recipes);
+
       router.push('/matchup');
     } catch (e: any) {
       const msg = e.message ?? 'Failed to load recipes. Try again.';
@@ -601,10 +615,23 @@ function DivisionCard({
   const v = CARD_VARIANTS[index % CARD_VARIANTS.length];
   const isAnchor = division.division_type === 'anchor';
   const timerLabel = isAnchor ? 'RECIPES IN' : 'ROTATES IN';
+  const isPreparing = division.curation_pending || (division.recipe_ids?.length ?? 0) < BRACKET_SIZE;
+
+  function handlePress() {
+    if (isPreparing) {
+      Alert.alert(
+        'Recipes Are Being Curated',
+        'This arena just rotated and we\'re generating its recipes right now. It takes about 5 minutes — check back shortly!',
+        [{ text: 'Got It', style: 'default' }]
+      );
+      return;
+    }
+    onPress();
+  }
 
   return (
     <TouchableOpacity
-      onPress={onPress}
+      onPress={handlePress}
       disabled={disabled}
       activeOpacity={0.85}
       style={[
@@ -647,6 +674,17 @@ function DivisionCard({
         </View>
       )}
 
+      {/* Preparing overlay — sits above image, below bottom text */}
+      {isPreparing && (
+        <View style={pr.overlay} pointerEvents="none">
+          <View style={pr.badge}>
+            <Text style={pr.badgeIcon}>⚙️</Text>
+            <Text style={pr.badgeText}>ARENA PREPARING</Text>
+          </View>
+          <Text style={pr.subText}>READY IN A FEW MINUTES</Text>
+        </View>
+      )}
+
       {/* Bottom dark overlay + text */}
       <View style={s.cardOverlay}>
         {loading ? (
@@ -659,14 +697,18 @@ function DivisionCard({
             ]}>
               {division.name.toUpperCase()}
             </Text>
-            <RotationTimer
-              rotatesAt={rotatesAt}
-              now={now}
-              accentColor={v.border}
-              label={timerLabel}
-            />
-            <View style={[s.contenderBadge, { backgroundColor: v.badgeBg }]}>
-              <Text style={[s.contenderText, { color: v.badgeText }]}>{BRACKET_SIZE} CONTENDERS</Text>
+            {!isPreparing && (
+              <RotationTimer
+                rotatesAt={rotatesAt}
+                now={now}
+                accentColor={v.border}
+                label={timerLabel}
+              />
+            )}
+            <View style={[s.contenderBadge, { backgroundColor: isPreparing ? '#333' : v.badgeBg }]}>
+              <Text style={[s.contenderText, { color: isPreparing ? '#888' : v.badgeText }]}>
+                {isPreparing ? 'COMING SOON' : `${BRACKET_SIZE} CONTENDERS`}
+              </Text>
             </View>
           </>
         )}
@@ -674,6 +716,33 @@ function DivisionCard({
     </TouchableOpacity>
   );
 }
+
+// Preparing overlay styles
+const pr = StyleSheet.create({
+  overlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center', justifyContent: 'center',
+    zIndex: 6, gap: 8,
+  },
+  badge: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 3, borderColor: C.trophyGold,
+    paddingHorizontal: 16, paddingVertical: 8,
+    shadowColor: C.trophyGold, shadowOffset: { width: 4, height: 4 }, shadowOpacity: 1, shadowRadius: 0,
+    elevation: 6,
+  },
+  badgeIcon: { fontSize: 18 },
+  badgeText: {
+    fontWeight: '900', fontSize: 16, color: C.trophyGold,
+    fontStyle: 'italic', letterSpacing: 2,
+  },
+  subText: {
+    fontWeight: '900', fontSize: 10, color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 2,
+  },
+});
 
 // Tablet grid layout for card list
 const lt = StyleSheet.create({

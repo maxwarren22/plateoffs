@@ -9,8 +9,6 @@ const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 const GEMINI_BASE  = 'https://generativelanguage.googleapis.com/v1beta'
 const TEXT_MODEL   = 'gemini-2.5-flash'
-const IMAGE_MODEL  = 'gemini-2.5-flash-image'
-const IMAGE_BUCKET = 'recipe-images'
 
 const MAX_BANK_SIZE       = 250
 const INITIAL_BANK_TARGET = 40
@@ -27,15 +25,6 @@ const CORS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const IMAGE_BACKGROUNDS = [
-  'rustic wooden table with fresh herbs scattered around, top-down view',
-  'white marble surface with linen napkin and silver fork, top-down view',
-  'dark slate surface with colorful fresh ingredients around the dish, top-down view',
-  'light wood cutting board with fresh ingredients at the edges, top-down view',
-  'terracotta tiles with olive oil and fresh vegetables nearby, 45-degree angle',
-  'black cast iron on worn oak table, moody side-lit, 45-degree angle',
-  'bright white ceramic plate on linen tablecloth, natural window light, side angle',
-]
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -96,49 +85,37 @@ function buildImagePrompt(recipeName: string): string {
   return `Professional food photography of ${recipeName}. ${bg}. Natural light. Garnished and plated for a high-end restaurant menu. Photorealistic, high resolution, appetizing, vibrant colors.`
 }
 
-async function geminiImage(recipeName: string): Promise<Uint8Array | null> {
-  try {
-    const response = await ai.models.generateContent({
-      model: IMAGE_MODEL,
-      contents: buildImagePrompt(recipeName),
-      config: {
-        responseModalities: ['IMAGE'],
-        imageConfig: { aspectRatio: '1:1' },
-      },
-    })
-    const part = response.candidates?.[0]?.content?.parts?.[0]
-    if (!part?.inlineData?.data) return null
-    return Uint8Array.from(atob(part.inlineData.data), c => c.charCodeAt(0))
-  } catch (err) {
-    console.error(`Image generation failed for "${recipeName}":`, err)
-    return null
-  }
-}
 
-async function uploadImage(
-  supabase: ReturnType<typeof createClient>,
-  recipeId: string,
-  imageBytes: Uint8Array
-): Promise<string | null> {
-  const path = `ai-generated/${recipeId}.png`
-  const { error } = await supabase.storage
-    .from(IMAGE_BUCKET)
-    .upload(path, imageBytes, { contentType: 'image/png', upsert: true })
-  if (error) {
-    console.error(`Image upload failed for ${recipeId}:`, error.message)
-    return null
-  }
-  return path
-}
 
 // ── Prompt builders ───────────────────────────────────────────────────────────
 
+function recipeTypeConstraint(category: string): { dish: string; mealType: string } {
+  if (category === 'dessert') {
+    return {
+      dish: 'desserts, sweet treats, baked goods, or confections (no savory dishes)',
+      mealType: '"dessert"',
+    }
+  }
+  if (category === 'seasonal' || category === 'wildcard') {
+    return {
+      dish: 'complete, platable dishes — may include salads, soups, mains, brunches, or light meals appropriate to the division theme (no dips, sauces, condiments)',
+      mealType: 'the accurate meal type(s) for each dish, e.g. "lunch", "dinner", "breakfast", "brunch", "salad", "soup"',
+    }
+  }
+  // anchor, cuisine
+  return {
+    dish: 'main meals or substantial complete dishes (no dips, sauces, sides, snacks, or condiments)',
+    mealType: '"lunch" or "dinner" as appropriate',
+  }
+}
+
 function buildPass1Prompt(division: CatalogEntry): string {
+  const { dish, mealType } = recipeTypeConstraint(division.category)
   return `You are a culinary curator for a food tournament app called Plateoffs.
 
 Division: "${division.name}" — ${division.description ?? division.category}
 
-Propose up to 20 recipes that would compete in this bracket. All recipes MUST be main meals or substantial complete dishes (no dips, sauces, sides, snacks, or condiments). The set MUST include:
+Propose up to 20 recipes that would compete in this bracket. All recipes MUST be ${dish}. The set MUST include:
 - At least 8 that are vegetarian
 - At least 8 that are vegan
 - At least 8 that are gluten-free
@@ -146,7 +123,9 @@ Propose up to 20 recipes that would compete in this bracket. All recipes MUST be
 - At least 8 that are dairy-free
 (Many recipes will satisfy multiple criteria simultaneously — optimize for overlap.)
 
-Each recipe must be iconic within the theme, visually striking, varied in technique, and a real named dish.
+Each recipe must be iconic within the theme, visually striking, varied in technique, and a real named dish. All recipe names MUST be in English. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+
+For meal_type_tags use ${mealType}.
 
 Return ONLY a JSON array:
 [{
@@ -160,11 +139,14 @@ Return ONLY a JSON array:
 }
 
 function buildGapFillPrompt(division: CatalogEntry, profile: DietaryTag, need: number): string {
+  const { dish, mealType } = recipeTypeConstraint(division.category)
   return `You are a culinary curator for Plateoffs.
 
 Division: "${division.name}" — ${division.description ?? division.category}
 
-The current pool is short on ${profile.replace(/_/g, '-')} options. Generate exactly ${need} more recipes that are strictly ${profile.replace(/_/g, '-')} and authentic to this division. Main meals only — no sides or snacks.
+The current pool is short on ${profile.replace(/_/g, '-')} options. Generate exactly ${need} more recipes that are strictly ${profile.replace(/_/g, '-')} and authentic to this division. All recipes MUST be ${dish}. All recipe names MUST be in English. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+
+For meal_type_tags use ${mealType}.
 
 Return ONLY a JSON array:
 [{
@@ -179,6 +161,7 @@ Return ONLY a JSON array:
 
 function buildGrowthPrompt(division: CatalogEntry, existingNames: string[]): string {
   const nameList = existingNames.slice(-40).map(n => `- ${n}`).join('\n')
+  const { dish, mealType } = recipeTypeConstraint(division.category)
   return `You are a culinary curator for Plateoffs.
 
 Division: "${division.name}" — ${division.description ?? division.category}
@@ -186,7 +169,9 @@ Division: "${division.name}" — ${division.description ?? division.category}
 This division already has these recipes — do NOT repeat them or close variants:
 ${nameList}
 
-Add ${GROWTH_BATCH} fresh recipes. Vary technique, origin, and style while staying authentic to the theme. Main meals only. Include dietary tags wherever authentic.
+Add ${GROWTH_BATCH} fresh recipes. Vary technique, origin, and style while staying authentic to the theme. All recipes MUST be ${dish}. All recipe names MUST be in English. Include dietary tags wherever authentic. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+
+For meal_type_tags use ${mealType}.
 
 Return ONLY a JSON array:
 [{
@@ -290,23 +275,20 @@ async function tagExistingRecipe(supabase: any, id: string, tags: DietaryTag[]):
   await supabase.from('recipes').update({ dietary_tags: merged }).eq('id', id)
 }
 
-// Text details and image generation run in parallel — image takes longer (~15s)
-// but overlaps with text generation (~5s), so net extra time is minimal.
+// Images are generated separately by backfill-recipe-images after curation completes.
 async function insertRecipe(
   supabase: any,
   proposed: ProposedRecipe,
   divisionName: string
 ): Promise<string | null> {
-  console.log(`Generating details + image for: ${proposed.name}`)
+  console.log(`Generating details for: ${proposed.name}`)
 
-  const [detailsResult, imageResult] = await Promise.allSettled([
-    geminiJSON(buildRecipeDetailPrompt(proposed.name, divisionName)) as Promise<RecipeDetails>,
-    geminiImage(proposed.name),
-  ])
-
-  const details: RecipeDetails = detailsResult.status === 'fulfilled'
-    ? detailsResult.value
-    : { ingredients: [], instructions: [] }
+  let details: RecipeDetails = { ingredients: [], instructions: [] }
+  try {
+    details = await geminiJSON(buildRecipeDetailPrompt(proposed.name, divisionName)) as RecipeDetails
+  } catch (err) {
+    console.error(`Detail generation failed for "${proposed.name}":`, err)
+  }
 
   const { data, error } = await supabase
     .from('recipes')
@@ -328,15 +310,6 @@ async function insertRecipe(
   if (error || !data) {
     console.error(`Failed to insert recipe "${proposed.name}":`, error?.message)
     return null
-  }
-
-  // Upload image if generation succeeded
-  if (imageResult.status === 'fulfilled' && imageResult.value) {
-    const path = await uploadImage(supabase, data.id, imageResult.value)
-    if (path) {
-      await supabase.from('recipes').update({ image_path: path }).eq('id', data.id)
-      console.log(`Image saved for: ${proposed.name}`)
-    }
   }
 
   return data.id
@@ -546,7 +519,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, division: division.name, ...result }),
+      JSON.stringify({ ok: true, division: division.name, catalog_id: division.id, ...result }),
       { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
     )
   } catch (err) {

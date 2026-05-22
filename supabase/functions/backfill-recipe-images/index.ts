@@ -1,6 +1,6 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { GoogleGenAI } from 'npm:@google/genai@1.11.0'
-import { Jimp } from 'npm:jimp@1.6.0'
+import sharp from 'npm:sharp'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -11,9 +11,9 @@ const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const IMAGE_MODEL  = 'gemini-2.5-flash-image'
 const IMAGE_BUCKET = 'recipe-images'
 
-// Store under permanent/ so CMP's getRecipeImageUrl handles the path correctly
-// (it only adds the permanent/ prefix for paths that don't already have it).
-const IMAGE_PREFIX = 'permanent/ai-generated'
+function nameToSlug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
 
 // Compress to webp — far smaller than raw Gemini PNG (2MB+ → ~100KB)
 const WEBP_QUALITY = 85
@@ -72,19 +72,10 @@ async function geminiImage(prompt: string): Promise<Uint8Array | null> {
 
 async function compressImage(pngBytes: Uint8Array): Promise<Uint8Array> {
   try {
-    const image = await Jimp.read(Buffer.from(pngBytes))
-
-    // Resize to max MAX_DIMENSION on longest side, maintaining aspect ratio
-    const { width, height } = image.bitmap
-    if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
-      if (width >= height) {
-        image.resize({ w: MAX_DIMENSION })
-      } else {
-        image.resize({ h: MAX_DIMENSION })
-      }
-    }
-
-    const buffer = await image.getBuffer('image/webp', { quality: WEBP_QUALITY })
+    const buffer = await sharp(pngBytes)
+      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: WEBP_QUALITY })
+      .toBuffer()
     const compressed = new Uint8Array(buffer)
     console.log(`Compressed: ${pngBytes.length} bytes PNG → ${compressed.length} bytes webp`)
     return compressed
@@ -99,9 +90,10 @@ async function compressImage(pngBytes: Uint8Array): Promise<Uint8Array> {
 async function uploadImage(
   supabase: ReturnType<typeof createClient>,
   recipeId: string,
+  recipeName: string,
   imageBytes: Uint8Array
 ): Promise<string | null> {
-  const path = `${IMAGE_PREFIX}/${recipeId}.webp`
+  const path = `permanent/${nameToSlug(recipeName)}-${Date.now()}.webp`
   const { error } = await supabase.storage
     .from(IMAGE_BUCKET)
     .upload(path, imageBytes, { contentType: 'image/webp', upsert: true })
@@ -141,11 +133,13 @@ Deno.serve(async (req) => {
       if (bankError) throw new Error(`division_recipe_bank query failed: ${bankError.message}`)
       targetIds = (bankRows ?? []).map((r: { recipe_id: string }) => r.recipe_id)
     } else {
+      // Fetch ALL bank recipe IDs — no row limit here. The bank tops out at ~2000 rows
+      // (8 divisions × 250 max), so a full scan is cheap. Capping this was the bug:
+      // recipes added during a rotation days ago fall outside a recency window and are
+      // never found again by the cron.
       const { data: bankRows, error: bankError } = await supabase
         .from('division_recipe_bank')
         .select('recipe_id')
-        .order('added_at', { ascending: false })
-        .limit(limit * 5)
       if (bankError) throw new Error(`division_recipe_bank query failed: ${bankError.message}`)
       targetIds = (bankRows ?? []).map((r: { recipe_id: string }) => r.recipe_id)
     }
@@ -157,14 +151,21 @@ Deno.serve(async (req) => {
       )
     }
 
-    const { data: targets, error: recipesError } = await supabase
-      .from('recipes')
-      .select('id, name')
-      .eq('source', 'ai')
-      .is('image_path', null)
-      .in('id', targetIds)
-      .limit(limit)
-    if (recipesError) throw new Error(`recipes query failed: ${recipesError.message}`)
+    // Query in chunks of 100 to avoid URL length limits, collect up to `limit` targets
+    const CHUNK = 100
+    const targets: { id: string; name: string }[] = []
+    for (let i = 0; i < targetIds.length && targets.length < limit; i += CHUNK) {
+      const chunk = targetIds.slice(i, i + CHUNK)
+      const { data, error: recipesError } = await supabase
+        .from('recipes')
+        .select('id, name')
+        .eq('source', 'ai')
+        .is('image_path', null)
+        .in('id', chunk)
+        .limit(limit - targets.length)
+      if (recipesError) throw new Error(`recipes query failed: ${recipesError.message}`)
+      if (data) targets.push(...data)
+    }
 
     if (!targets?.length) {
       return new Response(
@@ -185,7 +186,7 @@ Deno.serve(async (req) => {
           if (!rawBytes) { failed++; return }
 
           const imageBytes = await compressImage(rawBytes)
-          const path = await uploadImage(supabase, recipe.id, imageBytes)
+          const path = await uploadImage(supabase, recipe.id, recipe.name, imageBytes)
           if (path) {
             await supabase.from('recipes').update({ image_path: path }).eq('id', recipe.id)
             succeeded++

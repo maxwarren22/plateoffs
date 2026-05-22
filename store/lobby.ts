@@ -8,6 +8,7 @@ interface LobbyState {
   loading: boolean;
   error: string | null;
   prefetch: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 export const useLobbyStore = create<LobbyState>((set, get) => ({
@@ -29,6 +30,20 @@ export const useLobbyStore = create<LobbyState>((set, get) => ({
       set({ error: e.message ?? 'Failed to load divisions' });
     } finally {
       set({ loading: false });
+    }
+  },
+
+  refresh: async () => {
+    if (get().loading) return;
+    // Silent background refresh — don't set loading so existing cards stay visible.
+    try {
+      const [divisions, rotationTimes] = await Promise.all([
+        fetchActiveDivisions(),
+        fetchAllRotationTimes(),
+      ]);
+      set({ divisions, rotationTimes });
+    } catch {
+      // Swallow silently — stale data is fine, don't flash an error on re-focus.
     }
   },
 }));

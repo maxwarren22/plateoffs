@@ -50,11 +50,12 @@ export const useTournamentStore = create<TournamentState>()(
 
       selectWinner: (winner, winnerSide) => {
         const { remainingRecipes, matchupCount } = get();
-        if (remainingRecipes.length === 0) {
+        const remaining = remainingRecipes.filter(Boolean);
+        if (remaining.length === 0) {
           set({ champion: winner });
           return;
         }
-        const [next, ...rest] = remainingRecipes;
+        const [next, ...rest] = remaining;
         if (winnerSide === 'left') {
           set({ leftRecipe: winner, rightRecipe: next, remainingRecipes: rest, matchupCount: matchupCount + 1 });
         } else {
