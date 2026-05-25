@@ -1,17 +1,16 @@
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import * as Sentry from '@sentry/react-native';
 import { initNotificationHandler } from '@/lib/notifications';
 
-Sentry.init({
-  dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
-  enabled: !__DEV__,
-  tracesSampleRate: 0,
-});
-
-export default Sentry.wrap(function RootLayout() {
-  useEffect(() => { initNotificationHandler(); }, []);
+export default function RootLayout() {
+  useEffect(() => {
+    // Defer off the initial render tick to avoid crashing the Hermes GC during
+    // startup — expo-notifications throws an NSException on some iPad/iOS combos
+    // that corrupts the JS runtime if called synchronously at mount.
+    const t = setTimeout(initNotificationHandler, 500);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <>
@@ -25,4 +24,4 @@ export default Sentry.wrap(function RootLayout() {
       />
     </>
   );
-});
+}

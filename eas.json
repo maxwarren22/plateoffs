@@ -12,10 +12,7 @@
       "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "env": {
-        "SENTRY_AUTH_TOKEN": "SECRET:SENTRY_AUTH_TOKEN"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {

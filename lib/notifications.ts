@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 export function initNotificationHandler(): void {
+  if (Platform.OS === 'web') return;
   try {
     Notifications.setNotificationHandler({
       handleNotification: async () => ({

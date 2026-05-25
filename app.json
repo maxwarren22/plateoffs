@@ -61,13 +61,6 @@
           "color": "#f55f4f",
           "defaultChannel": "division-rotation"
         }
-      ],
-      [
-        "@sentry/react-native/expo",
-        {
-          "organization": "curate-my-plate",
-          "project": "plateoffs-native"
-        }
       ]
     ],
     "extra": {
