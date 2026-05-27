@@ -35,6 +35,7 @@ function dbRowToRecipe(row: any, full = false): Recipe {
     cook_time_minutes: row.total_time_minutes ?? null,
     difficulty: row.skill_level ?? null,
     tags: row.tags ?? [],
+    dietary_tags: row.dietary_tags ?? [],
     ...(full && {
       ingredients: Array.isArray(row.ingredients) ? row.ingredients : null,
       instructions: Array.isArray(row.instructions)

@@ -1,5 +1,6 @@
 # Dependencies — EAS installs these fresh on the build server
 node_modules/
+ios/Pods/
 
 # Expo local cache
 .expo/

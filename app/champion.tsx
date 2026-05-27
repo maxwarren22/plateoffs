@@ -110,6 +110,7 @@ const MAX_CONTENT_W = 1060;
 export default function ChampionScreen() {
   const router = useRouter();
   const { isTablet, screenWidth } = useLayout();
+  const isTwoColumn = screenWidth >= 1100;
   const hPad = isTablet ? Math.max(32, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 24;
   const { champion, reset } = useTournamentStore();
   const [fullRecipe, setFullRecipe] = useState<Recipe | null>(null);
@@ -141,9 +142,9 @@ export default function ChampionScreen() {
       </View>
 
       {/* ScrollView spans full screen so you can scroll anywhere on the page */}
-      <ScrollView style={s.scroll} contentContainerStyle={[s.content, isTablet && s.contentTablet, { paddingHorizontal: hPad }]} showsVerticalScrollIndicator={false}>
-        {/* Left col on tablet: headline + image. Phone: flows inline. */}
-        <View style={isTablet ? s.tabletLeft : s.phoneCol}>
+      <ScrollView style={s.scroll} contentContainerStyle={[s.content, isTwoColumn && s.contentTablet, { paddingHorizontal: hPad }]} showsVerticalScrollIndicator={false}>
+        {/* Left col on wide tablet: headline + image. Phone/portrait tablet: flows inline. */}
+        <View style={isTwoColumn ? s.tabletLeft : s.phoneCol}>
           {/* Electric glow headline */}
           <View style={s.headlineContainer}>
             <Text style={s.headline}>WE HAVE A{'\n'}CHAMPION!</Text>
@@ -172,11 +173,11 @@ export default function ChampionScreen() {
           </View>
         </View>
 
-        {/* Right col on tablet: recipe info + panels + CTAs. Phone: flows inline. */}
-        <View style={isTablet ? s.tabletRight : s.phoneCol}>
+        {/* Right col on wide tablet: recipe info + panels + CTAs. Phone/portrait tablet: flows inline. */}
+        <View style={isTwoColumn ? s.tabletRight : s.phoneCol}>
           {/* Recipe info */}
           <View style={s.infoCard}>
-            <Text style={s.recipeTitle}>{champion.title.toUpperCase()}</Text>
+            <Text style={s.recipeTitle}>{(champion.title ?? '').toUpperCase()}</Text>
             {(champion.cook_time_minutes || champion.difficulty) ? (
               <View style={s.metaRow}>
                 {champion.cook_time_minutes ? (

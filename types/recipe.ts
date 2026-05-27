@@ -6,6 +6,7 @@ export interface Recipe {
   cook_time_minutes: number | null;
   difficulty: string | null;
   tags: string[];
+  dietary_tags?: string[];
   ingredients?: any[] | null;
   instructions?: any[] | null;
 }

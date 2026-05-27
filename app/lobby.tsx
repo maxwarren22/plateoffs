@@ -17,7 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTournamentStore } from '@/store/tournament';
 import { useUserStore, type DietaryTag } from '@/store/user';
-import { fetchDivisionRecipes, fetchRecipeImageUrls } from '@/lib/supabase';
+import { fetchDivisionRecipes } from '@/lib/supabase';
 import { type Division, BRACKET_SIZE } from '@/lib/tournament';
 import { C } from '@/constants/colors';
 import { s } from '@/styles/lobby.styles';
@@ -48,7 +48,7 @@ export default function LobbyScreen() {
   const hPad = isTablet ? Math.max(28, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 20;
   const { setDivision, startGauntlet } = useTournamentStore();
   const { dietaryProfile, notifPromptSeen, markNotifPromptSeen } = useUserStore();
-  const { divisions, rotationTimes, loading: loadingDivisions, error: storeError, prefetch, refresh } = useLobbyStore();
+  const { divisions, rotationTimes, prefetchedRecipes, loading: loadingDivisions, error: storeError, prefetch, refresh } = useLobbyStore();
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -74,20 +74,15 @@ export default function LobbyScreen() {
   }, []);
 
   useEffect(() => {
-    if (notifPromptSeen) return;
+    if (notifPromptSeen) {
+      setShowNotifPrompt(false);
+      return;
+    }
     Notifications.getPermissionsAsync()
       .then(({ status }) => { if (status !== 'granted') setShowNotifPrompt(true); })
       .catch(() => {});
   }, [notifPromptSeen]);
 
-  // Prefetch recipe images for all divisions while the user browses the lobby.
-  useEffect(() => {
-    if (!divisions.length) return;
-    const ids = divisions.flatMap((d) => (d.recipe_ids ?? []).slice(0, BRACKET_SIZE));
-    fetchRecipeImageUrls(ids)
-      .then((urls) => { urls.forEach((url) => Image.prefetch(url).catch(() => {})); })
-      .catch(() => {});
-  }, [divisions.length]);
 
   // Schedule notifications once we know both division names and rotation times
   useEffect(() => {
@@ -107,10 +102,37 @@ export default function LobbyScreen() {
     setLoadingId(div.id);
     setError(null);
     try {
-      const recipes = await fetchDivisionRecipes(div, dietaryProfile);
-      setDivision(div);
-      startGauntlet(recipes);
+      // Use in-memory prefetched recipes (loaded in background when lobby opened).
+      // Falls back to a fresh DB fetch if background load hasn't finished yet.
+      const cached = prefetchedRecipes[div.id];
+      let recipes: import('@/types/recipe').Recipe[];
+      if (cached && cached.length >= BRACKET_SIZE) {
+        // Apply dietary filter client-side — cached set is always unfiltered.
+        if (dietaryProfile.length > 0) {
+          const filtered = cached.filter((r) =>
+            dietaryProfile.every((tag) => r.dietary_tags?.includes(tag))
+          );
+          recipes = filtered.length >= BRACKET_SIZE
+            ? filtered.slice(0, BRACKET_SIZE)
+            : cached.slice(0, BRACKET_SIZE); // not enough matches — use unfiltered fallback
+        } else {
+          recipes = cached.slice(0, BRACKET_SIZE);
+        }
+      } else {
+        recipes = await fetchDivisionRecipes(div, dietaryProfile);
+      }
 
+      // Shuffle here so we know which two images appear first in the matchup.
+      const shuffled = [...recipes].sort(() => Math.random() - 0.5);
+      // Await first two images — if already in native cache (from lobby background prefetch)
+      // this resolves near-instantly; otherwise downloads complete before navigation.
+      await Promise.allSettled([
+        shuffled[0]?.image_url ? Image.prefetch(shuffled[0].image_url) : Promise.resolve(),
+        shuffled[1]?.image_url ? Image.prefetch(shuffled[1].image_url) : Promise.resolve(),
+      ]);
+      shuffled.slice(2).forEach((r) => { if (r.image_url) Image.prefetch(r.image_url).catch(() => {}); });
+      setDivision(div);
+      startGauntlet(shuffled);
       router.push('/matchup');
     } catch (e: any) {
       const msg = e.message ?? 'Failed to load recipes. Try again.';

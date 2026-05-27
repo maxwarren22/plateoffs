@@ -37,11 +37,11 @@ export const useTournamentStore = create<TournamentState>()(
       setDivision: (division) => set({ division }),
 
       startGauntlet: (recipes) => {
-        const shuffled = [...recipes].sort(() => Math.random() - 0.5);
+        // Caller is responsible for shuffling — so we know which images to prefetch first.
         set({
-          leftRecipe: shuffled[0],
-          rightRecipe: shuffled[1],
-          remainingRecipes: shuffled.slice(2),
+          leftRecipe: recipes[0],
+          rightRecipe: recipes[1],
+          remainingRecipes: recipes.slice(2),
           matchupCount: 0,
           totalMatchups: recipes.length - 1,
           champion: null,
@@ -52,7 +52,7 @@ export const useTournamentStore = create<TournamentState>()(
         const { remainingRecipes, matchupCount } = get();
         const remaining = remainingRecipes.filter(Boolean);
         if (remaining.length === 0) {
-          set({ champion: winner });
+          set({ champion: winner, matchupCount: matchupCount + 1 });
           return;
         }
         const [next, ...rest] = remaining;
