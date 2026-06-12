@@ -45,7 +45,7 @@ export default function MatchupScreen() {
 
   useEffect(() => {
     if (!division || !leftRecipe || !rightRecipe) {
-      router.replace('/lobby');
+      router.replace('/');
     }
   }, [division, leftRecipe, rightRecipe]);
 
@@ -443,7 +443,6 @@ const s = StyleSheet.create({
     borderWidth: 2, borderColor: '#000',
   },
   levelText: { fontSize: 10, fontWeight: '900', color: '#000' },
-
   cardInfo: { flex: 1, padding: 12, justifyContent: 'center' },
   cardInfoRight: { alignItems: 'flex-end' },
   cardTitle: { fontWeight: '900', fontSize: IS_TABLET ? 28 : 22, fontStyle: 'italic', marginBottom: 6, lineHeight: IS_TABLET ? 28 : 22 },

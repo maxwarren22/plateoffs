@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTournamentStore } from '@/store/tournament';
-import { fetchRecipeById } from '@/lib/supabase';
+import { useSavedRecipesStore } from '@/store/savedRecipes';
+import { useSessionStore } from '@/store/session';
+import { fetchRecipeById, submitChampion } from '@/lib/supabase';
 import type { Recipe } from '@/types/recipe';
 import { C } from '@/constants/colors';
 import { IS_TABLET, useLayout } from '@/constants/layout';
@@ -113,20 +115,60 @@ export default function ChampionScreen() {
   const isTwoColumn = screenWidth >= 1100;
   const hPad = isTablet ? Math.max(32, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 24;
   const { champion, reset } = useTournamentStore();
+  const { saveRecipe, isSaved } = useSavedRecipesStore();
+  const { mode, session } = useSessionStore();
+  const isMultiplayer = mode === 'multiplayer' && !!session;
   const [fullRecipe, setFullRecipe] = useState<Recipe | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saved'>('idle');
+  const [submitting, setSubmitting] = useState(false);
+  const submittedRef = useRef(false);
 
   useEffect(() => {
-    if (!champion) router.replace('/lobby');
+    if (!champion) router.replace('/');
   }, [champion]);
 
   useEffect(() => {
     if (!champion) return;
+    if (isSaved(champion.id)) setSaveState('saved');
     setLoadingDetails(true);
     fetchRecipeById(champion.id)
       .then((r) => setFullRecipe(r))
       .finally(() => setLoadingDetails(false));
   }, [champion?.id]);
+
+  // In multiplayer, auto-submit the champion to the session as soon as the screen mounts.
+  useEffect(() => {
+    if (!isMultiplayer || !champion || !session || submittedRef.current) return;
+    submittedRef.current = true;
+    setSubmitting(true);
+    submitChampion(session.id, champion.id)
+      .catch(() => { submittedRef.current = false; })
+      .finally(() => setSubmitting(false));
+  }, [isMultiplayer, champion?.id, session?.id]);
+
+  function handleSave() {
+    if (!champion) return;
+    if (saveState === 'saved') {
+      router.push('/saved');
+      return;
+    }
+    const result = saveRecipe({
+      id: champion.id,
+      title: champion.title,
+      image_url: champion.image_url,
+      description: champion.description,
+      cook_time_minutes: champion.cook_time_minutes,
+      difficulty: champion.difficulty,
+      savedAt: Date.now(),
+    });
+    if (result === 'saved' || result === 'duplicate') {
+      setSaveState('saved');
+    } else {
+      // full — navigate to saved page in replace mode
+      router.push({ pathname: '/saved', params: { mode: 'replace' } });
+    }
+  }
 
   if (!champion) return null;
 
@@ -243,14 +285,43 @@ export default function ChampionScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => { reset(); router.replace('/lobby'); }}
+            onPress={handleSave}
             activeOpacity={0.85}
-            style={s.secondaryCta}
+            style={[s.saveCta, saveState === 'saved' && s.saveCtaSaved]}
             accessibilityRole="button"
-            accessibilityLabel="Play another division"
+            accessibilityLabel={saveState === 'saved' ? 'See recipe in Recipe Box' : 'Save to My Recipe Box'}
           >
-            <Text style={s.secondaryCtaText}>PLAY ANOTHER DIVISION  ↻</Text>
+            <Text style={s.saveCtaText}>
+              {saveState === 'saved' ? 'SEE IN RECIPE BOX  →' : 'SAVE TO MY RECIPE BOX  ★'}
+            </Text>
           </TouchableOpacity>
+
+          {isMultiplayer ? (
+            <TouchableOpacity
+              onPress={() => router.replace(`/session/${session!.code}/results`)}
+              activeOpacity={0.85}
+              style={s.resultsCta}
+              accessibilityRole="button"
+              accessibilityLabel="See group results"
+              disabled={submitting}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <Text style={s.resultsCtaText}>SEE GROUP RESULTS  →</Text>
+              )}
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              onPress={() => { reset(); router.replace('/'); }}
+              activeOpacity={0.85}
+              style={s.secondaryCta}
+              accessibilityRole="button"
+              accessibilityLabel="Play another division"
+            >
+              <Text style={s.secondaryCtaText}>PLAY ANOTHER DIVISION  ↻</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -345,6 +416,15 @@ const s = StyleSheet.create({
   },
   primaryCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 22 : 20, color: C.onPrimary, fontStyle: 'italic', textTransform: 'uppercase' },
 
+  saveCta: {
+    backgroundColor: C.secondary, paddingVertical: IS_TABLET ? 22 : 18, borderRadius: 0,
+    borderWidth: 4, borderColor: '#000', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 6, height: 6 }, shadowOpacity: 1, shadowRadius: 0,
+    elevation: 6,
+  },
+  saveCtaSaved: { backgroundColor: C.neonGreen },
+  saveCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 17 : 15, color: C.onSecondary, textTransform: 'uppercase', letterSpacing: 1, fontStyle: 'italic' },
+
   secondaryCta: {
     backgroundColor: C.tertiaryContainer, paddingVertical: IS_TABLET ? 22 : 18, borderRadius: 0,
     borderWidth: 4, borderColor: '#000', alignItems: 'center',
@@ -352,6 +432,14 @@ const s = StyleSheet.create({
     elevation: 4,
   },
   secondaryCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 17 : 15, color: C.onTertiaryContainer, textTransform: 'uppercase', letterSpacing: 1 },
+
+  resultsCta: {
+    backgroundColor: C.tertiaryContainer, paddingVertical: IS_TABLET ? 22 : 18, borderRadius: 0,
+    borderWidth: 4, borderColor: '#000', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 6, height: 6 }, shadowOpacity: 1, shadowRadius: 0,
+    elevation: 6,
+  },
+  resultsCtaText: { fontWeight: '900', fontSize: IS_TABLET ? 19 : 17, color: C.onTertiaryContainer, textTransform: 'uppercase', letterSpacing: 1, fontStyle: 'italic' },
 });
 
 const p = StyleSheet.create({

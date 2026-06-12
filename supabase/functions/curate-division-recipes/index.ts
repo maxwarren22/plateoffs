@@ -123,7 +123,7 @@ Propose up to 20 recipes that would compete in this bracket. All recipes MUST be
 - At least 8 that are dairy-free
 (Many recipes will satisfy multiple criteria simultaneously — optimize for overlap.)
 
-Each recipe must be iconic within the theme, visually striking, varied in technique, and a real named dish. All recipe names MUST be in English. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+Each recipe must be iconic within the theme, visually striking, varied in technique, and a real named dish. All recipe names MUST be in English — use the common English name even for international dishes (e.g. "Butter Chicken" not "Murgh Makhani"). Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English. Keep names concise: 1–5 words, 40 characters max.
 
 For meal_type_tags use ${mealType}.
 
@@ -144,7 +144,7 @@ function buildGapFillPrompt(division: CatalogEntry, profile: DietaryTag, need: n
 
 Division: "${division.name}" — ${division.description ?? division.category}
 
-The current pool is short on ${profile.replace(/_/g, '-')} options. Generate exactly ${need} more recipes that are strictly ${profile.replace(/_/g, '-')} and authentic to this division. All recipes MUST be ${dish}. All recipe names MUST be in English. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+The current pool is short on ${profile.replace(/_/g, '-')} options. Generate exactly ${need} more recipes that are strictly ${profile.replace(/_/g, '-')} and authentic to this division. All recipes MUST be ${dish}. All recipe names MUST be in English — use the common English name even for international dishes (e.g. "Butter Chicken" not "Murgh Makhani"). Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English. Keep names concise: 1–5 words, 40 characters max.
 
 For meal_type_tags use ${mealType}.
 
@@ -169,7 +169,7 @@ Division: "${division.name}" — ${division.description ?? division.category}
 This division already has these recipes — do NOT repeat them or close variants:
 ${nameList}
 
-Add ${GROWTH_BATCH} fresh recipes. Vary technique, origin, and style while staying authentic to the theme. All recipes MUST be ${dish}. All recipe names MUST be in English. Include dietary tags wherever authentic. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English.
+Add ${GROWTH_BATCH} fresh recipes. Vary technique, origin, and style while staying authentic to the theme. All recipes MUST be ${dish}. All recipe names MUST be in English — use the common English name even for international dishes (e.g. "Butter Chicken" not "Murgh Makhani"). Include dietary tags wherever authentic. Do NOT include dietary descriptors (e.g. "Vegan", "Gluten-Free", "Dairy-Free", "Vegetarian") in recipe names — use only the authentic dish name in English. Keep names concise: 1–5 words, 40 characters max.
 
 For meal_type_tags use ${mealType}.
 

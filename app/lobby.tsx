@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   Image,
   Modal,
   Alert,
+  Animated,
 } from 'react-native';
 import { AppFooter } from '@/components/AppFooter';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,10 +22,12 @@ import { fetchDivisionRecipes } from '@/lib/supabase';
 import { type Division, BRACKET_SIZE } from '@/lib/tournament';
 import { C } from '@/constants/colors';
 import { s } from '@/styles/lobby.styles';
-import { useLayout } from '@/constants/layout';
-import * as Notifications from 'expo-notifications';
-import { requestNotificationPermission, scheduleRotationNotifications } from '@/lib/notifications';
+import { IS_TABLET, useLayout } from '@/constants/layout';
+import { getNotificationPermissionStatus, requestNotificationPermission, scheduleRotationNotifications } from '@/lib/notifications';
 import { useLobbyStore } from '@/store/lobby';
+import { useSavedRecipesStore } from '@/store/savedRecipes';
+import { useSessionStore } from '@/store/session';
+import { createVoteSession } from '@/lib/supabase';
 
 
 function formatCountdownParts(targetMs: number, now: number) {
@@ -41,14 +44,59 @@ function formatCountdownParts(targetMs: number, now: number) {
 
 const MAX_CONTENT_W = 1060;
 
+const STEPS = [
+  'Pick an arena below to create your session.',
+  'Share your invite code with friends.',
+  'Everyone plays their own full bracket independently.',
+  'Compare champions on the results screen.',
+];
+
+function MultiplayerInstructions() {
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={s.multiplayerBanner}>
+      <TouchableOpacity
+        onPress={() => setOpen((v) => !v)}
+        activeOpacity={0.85}
+        style={s.multiplayerBannerHeader}
+        accessibilityRole="button"
+        accessibilityLabel={`Multiplayer instructions, ${open ? 'collapse' : 'expand'}`}
+        accessibilityState={{ expanded: open }}
+      >
+        <Text style={s.multiplayerBannerText}>MULTIPLAYER — HOW IT WORKS</Text>
+        <View style={s.multiplayerToggle}>
+          <Text style={s.multiplayerToggleText}>{open ? '−' : '+'}</Text>
+        </View>
+      </TouchableOpacity>
+
+      {open && (
+        <View style={s.multiplayerSteps}>
+          {STEPS.map((text, i) => (
+            <View key={i} style={s.multiplayerStep}>
+              <View style={s.multiplayerStepNum}>
+                <Text style={s.multiplayerStepNumText}>{i + 1}</Text>
+              </View>
+              <Text style={s.multiplayerStepText}>{text}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function LobbyScreen() {
   const router = useRouter();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const isMultiplayer = mode === 'multiplayer';
+  const { setMode, setSession } = useSessionStore();
   const { isTablet, screenWidth } = useLayout();
   // Full-width contentContainer; symmetric padding centers the content visually.
   const hPad = isTablet ? Math.max(28, Math.floor((screenWidth - MAX_CONTENT_W) / 2)) : 20;
   const { setDivision, startGauntlet } = useTournamentStore();
   const { dietaryProfile, notifPromptSeen, markNotifPromptSeen } = useUserStore();
-  const { divisions, rotationTimes, prefetchedRecipes, loading: loadingDivisions, error: storeError, prefetch, refresh } = useLobbyStore();
+  const savedCount = useSavedRecipesStore((s) => s.recipes.length);
+  const { divisions, rotationTimes, coverImageUris, prefetchedRecipes, loading: loadingDivisions, error: storeError, prefetch, refresh } = useLobbyStore();
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -78,8 +126,8 @@ export default function LobbyScreen() {
       setShowNotifPrompt(false);
       return;
     }
-    Notifications.getPermissionsAsync()
-      .then(({ status }) => { if (status !== 'granted') setShowNotifPrompt(true); })
+    getNotificationPermissionStatus()
+      .then((status) => { if (status !== 'granted') setShowNotifPrompt(true); })
       .catch(() => {});
   }, [notifPromptSeen]);
 
@@ -131,9 +179,19 @@ export default function LobbyScreen() {
         shuffled[1]?.image_url ? Image.prefetch(shuffled[1].image_url) : Promise.resolve(),
       ]);
       shuffled.slice(2).forEach((r) => { if (r.image_url) Image.prefetch(r.image_url).catch(() => {}); });
-      setDivision(div);
-      startGauntlet(shuffled);
-      router.push('/matchup');
+      if (isMultiplayer) {
+        setMode('multiplayer');
+        const session = await createVoteSession(div, shuffled.map((r) => r.id));
+        setSession(session, true);
+        setDivision(div);
+        startGauntlet(shuffled);
+        router.push(`/session/${session.code}?host=true`);
+      } else {
+        setMode('solo');
+        setDivision(div);
+        startGauntlet(shuffled);
+        router.push('/matchup');
+      }
     } catch (e: any) {
       const msg = e.message ?? 'Failed to load recipes. Try again.';
       setError(msg);
@@ -146,8 +204,23 @@ export default function LobbyScreen() {
   return (
     <SafeAreaView style={s.root}>
       {/* Header — full screen width, content self-centers */}
-      <View style={s.header}>
+      <View style={[s.header, lh.headerRow]}>
+        <View style={{ width: IS_TABLET ? 90 : 76 }} />
         <Text style={s.wordmark}>PLATEOFFS</Text>
+        <TouchableOpacity
+          onPress={() => router.push('/saved')}
+          style={lh.savesBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`My Recipe Box, ${savedCount} saved`}
+          activeOpacity={0.85}
+        >
+          {savedCount > 0 && (
+            <View style={lh.savesBadge}>
+              <Text style={lh.savesBadgeText}>{savedCount}</Text>
+            </View>
+          )}
+          <Text style={lh.savesBtnText}>★{'\n'}BOX</Text>
+        </TouchableOpacity>
       </View>
 
       <NotifPromptSheet
@@ -166,6 +239,7 @@ export default function LobbyScreen() {
       {/* ScrollView spans the full screen width so you can scroll anywhere */}
       <ScrollView style={s.scroll} contentContainerStyle={[s.content, { paddingHorizontal: hPad }]} showsVerticalScrollIndicator={false}>
         {/* Title */}
+        {isMultiplayer && <MultiplayerInstructions />}
         <Text style={s.title}>SELECT{'\n'}YOUR{'\n'}ARENA</Text>
 
         {/* Diet filter panel */}
@@ -178,23 +252,29 @@ export default function LobbyScreen() {
         )}
 
         {/* Division cards */}
-        <View style={[s.cardList, isTablet && lt.cardListTablet]}>
+        <View style={[s.cardList, lt.cardListTablet]}>
           {loadingDivisions ? (
-            <ActivityIndicator color={C.trophyGold} size="large" style={{ marginVertical: 40 }} />
+            CARD_VARIANTS.map((_, i) => (
+              <View key={i} style={lt.cardWrapper}>
+                <SkeletonDivisionCard index={i} />
+              </View>
+            ))
           ) : (
             divisions.map((div, i) => {
               const slotKey = div.division_type === 'anchor' ? 'ANCHOR' : (div.slot?.toUpperCase() ?? '');
               const rotatesAt = rotationTimes[slotKey] ?? null;
               return (
-                <View key={div.id} style={isTablet ? lt.cardWrapper : null}>
+                <View key={div.id} style={lt.cardWrapper}>
                   <DivisionCard
                     division={div}
+                    coverImageUri={coverImageUris[div.id]}
                     loading={loadingId === div.id}
                     disabled={loadingId !== null}
                     onPress={() => handleSelectDivision(div)}
                     index={i}
                     rotatesAt={rotatesAt}
                     now={now}
+                    isTablet={isTablet}
                   />
                 </View>
               );
@@ -454,6 +534,105 @@ const df = StyleSheet.create({
   clearText: { fontWeight: '900', fontSize: 11, color: C.chiliRed, letterSpacing: 1 },
 });
 
+// ── Skeleton loading cards ────────────────────────────────────────────────────
+
+const CARD_HEIGHT = IS_TABLET ? 480 : 260;
+
+function SkeletonDivisionCard({ index }: { index: number }) {
+  const v = CARD_VARIANTS[index % CARD_VARIANTS.length];
+  const pulse = useRef(new Animated.Value(0.5)).current;
+  const scanY = useRef(new Animated.Value(-CARD_HEIGHT)).current;
+  const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    const stagger = index * 200;
+    const t = setTimeout(() => {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, duration: 480, useNativeDriver: true }),
+          Animated.timing(pulse, { toValue: 0.45, duration: 480, useNativeDriver: true }),
+        ])
+      ).start();
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanY, { toValue: CARD_HEIGHT, duration: 1200, useNativeDriver: true }),
+          Animated.delay(400),
+          Animated.timing(scanY, { toValue: -CARD_HEIGHT, duration: 0, useNativeDriver: true }),
+          Animated.delay(stagger),
+        ])
+      ).start();
+    }, stagger);
+
+    const dotsTimer = setInterval(() => {
+      setDots((d) => (d.length >= 3 ? '' : d + '.'));
+    }, 380);
+
+    return () => { clearTimeout(t); clearInterval(dotsTimer); };
+  }, []);
+
+  return (
+    <Animated.View style={[
+      s.card,
+      { borderColor: v.border, shadowColor: v.shadow, backgroundColor: v.bg, opacity: pulse },
+    ]}>
+      {v.topElement === 'checkerboard' && (
+        <View style={cs.topStrip} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <CheckerboardStrip />
+        </View>
+      )}
+      {v.topElement === 'slimeDrip' && (
+        <View style={cs.topStrip} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <SlimeDripBar color={v.slimeDripColor ?? '#ccff00'} />
+        </View>
+      )}
+      {v.topElement === 'holographic' && (
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <HolographicOverlay />
+        </View>
+      )}
+      {v.topElement === 'starburst' && (
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <StarburstBadge color={v.badgeBg} />
+        </View>
+      )}
+
+      {/* Scan line sweeping top → bottom */}
+      <Animated.View
+        style={[sk.scanLine, { backgroundColor: v.border, transform: [{ translateY: scanY }] }]}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+      />
+
+      <View style={s.cardOverlay}>
+        <Text style={[
+          s.cardName,
+          { color: v.nameColor, textShadowColor: v.nameColor === '#000' ? '#fff' : '#000', textShadowOffset: { width: 3, height: 3 }, textShadowRadius: 0 },
+        ]}>
+          ARENA{'\n'}LOADING{dots}
+        </Text>
+        <View style={[s.contenderBadge, { backgroundColor: v.badgeBg }]}>
+          <Text style={[s.contenderText, { color: v.badgeText }]}>INCOMING</Text>
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
+
+const sk = StyleSheet.create({
+  scanLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 4,
+    opacity: 0.9,
+    zIndex: 8,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+});
+
 // ── Division cards ────────────────────────────────────────────────────────────
 
 const CARD_VARIANTS = [
@@ -570,19 +749,25 @@ function RotationTimer({
   now,
   accentColor,
   label,
+  isTablet,
 }: {
   rotatesAt: number | null;
   now: number;
   accentColor: string;
   label: string;
+  isTablet: boolean;
 }) {
   const display = (rotatesAt && rotatesAt > now) ? formatCountdownParts(rotatesAt, now) : '--:--:--';
 
   return (
-    <View style={rt.timerWrap}>
-      <View style={[rt.timerBorder, { borderColor: accentColor, shadowColor: accentColor, backgroundColor: accentColor }]}>
-        <Text style={rt.timerLabel}>{label}</Text>
-        <Text style={rt.timerDigits}>{display}</Text>
+    <View style={[rt.timerWrap, !isTablet && { marginBottom: 4 }]}>
+      <View style={[
+        rt.timerBorder,
+        { borderColor: accentColor, shadowColor: accentColor, backgroundColor: accentColor },
+        !isTablet && { paddingHorizontal: 8, paddingVertical: 3 },
+      ]}>
+        <Text style={[rt.timerLabel, !isTablet && { fontSize: 6, letterSpacing: 1 }]}>{label}</Text>
+        <Text style={[rt.timerDigits, !isTablet && { fontSize: 13, letterSpacing: 0 }]}>{display}</Text>
       </View>
     </View>
   );
@@ -619,20 +804,24 @@ const rt = StyleSheet.create({
 
 function DivisionCard({
   division,
+  coverImageUri,
   loading,
   disabled,
   onPress,
   index,
   rotatesAt,
   now,
+  isTablet,
 }: {
   division: Division;
+  coverImageUri?: string;
   loading: boolean;
   disabled: boolean;
   onPress: () => void;
   index: number;
   rotatesAt: number | null;
   now: number;
+  isTablet: boolean;
 }) {
   const v = CARD_VARIANTS[index % CARD_VARIANTS.length];
   const isAnchor = division.division_type === 'anchor';
@@ -667,7 +856,7 @@ function DivisionCard({
     >
       {/* Food image — decorative background */}
       <ImageBackground
-        source={division.cover_image_url ? { uri: division.cover_image_url } : CARD_IMAGES[index % CARD_IMAGES.length]}
+        source={coverImageUri ? { uri: coverImageUri } : CARD_IMAGES[index % CARD_IMAGES.length]}
         style={[s.cardImage, { opacity: v.imageOpacity }]}
         imageStyle={{ resizeMode: 'cover' }}
         accessibilityElementsHidden
@@ -725,6 +914,7 @@ function DivisionCard({
                 now={now}
                 accentColor={v.border}
                 label={timerLabel}
+                isTablet={isTablet}
               />
             )}
             <View style={[s.contenderBadge, { backgroundColor: isPreparing ? '#333' : v.badgeBg }]}>
@@ -766,10 +956,62 @@ const pr = StyleSheet.create({
   },
 });
 
-// Tablet grid layout for card list
+// Lobby header extras
+const lh = StyleSheet.create({
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  savesBtn: {
+    width: IS_TABLET ? 90 : 76,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: C.surfaceContainerHigh,
+    borderWidth: 3,
+    borderColor: '#000',
+    paddingVertical: IS_TABLET ? 8 : 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 3, height: 3 },
+    shadowOpacity: 1,
+    shadowRadius: 0,
+    elevation: 3,
+    position: 'relative',
+  },
+  savesBtnText: {
+    fontWeight: '900',
+    fontSize: IS_TABLET ? 12 : 10,
+    color: C.secondary,
+    letterSpacing: 1,
+    textAlign: 'center',
+    lineHeight: IS_TABLET ? 14 : 12,
+  },
+  savesBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    backgroundColor: C.primary,
+    borderWidth: 2,
+    borderColor: '#000',
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  savesBadgeText: {
+    fontWeight: '900',
+    fontSize: 10,
+    color: C.onPrimary,
+    lineHeight: 12,
+  },
+});
+
+// Two-column grid layout for card list (phone and tablet portrait)
 const lt = StyleSheet.create({
-  cardListTablet: { flexDirection: 'row', flexWrap: 'wrap', gap: 20 },
-  cardWrapper: { width: '48.5%' },
+  cardListTablet: { flexDirection: 'row', flexWrap: 'wrap', gap: IS_TABLET ? 20 : 12 },
+  cardWrapper: { width: IS_TABLET ? '48.5%' : '48%' },
 });
 
 // Styles only used by card sub-components

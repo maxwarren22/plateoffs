@@ -3,7 +3,7 @@
     "name": "Plateoffs",
     "slug": "plateoffs",
     "scheme": "plateoffs",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,6 +16,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.curatemyplate.plateoffs",
+      "associatedDomains": [
+        "applinks:curatemyplate.com"
+      ],
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
           "curatemyplate",
@@ -53,13 +56,26 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router",
+      [
+        "expo-router",
+        {
+          "headOrigin": "https://curatemyplate.com/plateoffs"
+        }
+      ],
       [
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
           "color": "#f55f4f",
           "defaultChannel": "division-rotation"
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "react-native",
+          "organization": "curate-my-plate"
         }
       ]
     ],

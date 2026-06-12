@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Recipe } from '@/types/recipe';
 import type { Division } from '@/lib/tournament';
 import { BRACKET_SIZE } from '@/lib/tournament';
@@ -6,7 +7,124 @@ import { BRACKET_SIZE } from '@/lib/tournament';
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    storage: AsyncStorage,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  },
+});
+
+export async function initAnonAuth(): Promise<void> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    await supabase.auth.signInAnonymously();
+  }
+}
+
+export async function getVoterId(): Promise<string> {
+  let { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    const { error } = await supabase.auth.signInAnonymously();
+    if (error) throw error;
+    ({ data: { session } } = await supabase.auth.getSession());
+  }
+  if (!session) throw new Error('Could not establish an auth session. Check your connection and try again.');
+  return session.user.id;
+}
+
+export interface VoteSession {
+  id: string;
+  code: string;
+  division_id: string;
+  division_name: string;
+  host_id: string;
+  status: 'waiting' | 'active' | 'complete';
+  recipe_ids: string[];
+  created_at: string;
+  expires_at: string;
+}
+
+export interface SessionParticipant {
+  session_id: string;
+  voter_id: string;
+  champion_recipe_id: string | null;
+  joined_at: string;
+  finished_at: string | null;
+}
+
+export async function createVoteSession(
+  division: Division,
+  recipeIds: string[]
+): Promise<VoteSession> {
+  const voterId = await getVoterId();
+  const { data, error } = await supabase
+    .from('vote_sessions')
+    .insert({
+      division_id: division.id,
+      division_name: division.name,
+      host_id: voterId,
+      recipe_ids: recipeIds,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  // Auto-join as first participant
+  await supabase.from('session_participants').insert({ session_id: data.id, voter_id: voterId });
+  return data as VoteSession;
+}
+
+export async function joinVoteSession(code: string): Promise<VoteSession> {
+  const { data, error } = await supabase
+    .from('vote_sessions')
+    .select()
+    .eq('code', code.toUpperCase())
+    .single();
+  if (error || !data) throw new Error('Session not found. Check your code and try again.');
+
+  const voterId = await getVoterId();
+  await supabase
+    .from('session_participants')
+    .upsert({ session_id: data.id, voter_id: voterId }, { onConflict: 'session_id,voter_id' });
+  return data as VoteSession;
+}
+
+export async function startVoteSession(sessionId: string): Promise<void> {
+  const { error } = await supabase
+    .from('vote_sessions')
+    .update({ status: 'active' })
+    .eq('id', sessionId);
+  if (error) throw error;
+}
+
+export async function submitChampion(sessionId: string, championRecipeId: string): Promise<void> {
+  const voterId = await getVoterId();
+  const { error } = await supabase
+    .from('session_participants')
+    .update({ champion_recipe_id: championRecipeId, finished_at: new Date().toISOString() })
+    .eq('session_id', sessionId)
+    .eq('voter_id', voterId);
+  if (error) throw error;
+}
+
+export async function fetchSessionParticipants(sessionId: string): Promise<SessionParticipant[]> {
+  const { data, error } = await supabase
+    .from('session_participants')
+    .select('*')
+    .eq('session_id', sessionId);
+  if (error) throw error;
+  return (data ?? []) as SessionParticipant[];
+}
+
+export async function fetchSessionParticipantCount(sessionId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('session_participants')
+    .select('*', { count: 'exact', head: true })
+    .eq('session_id', sessionId);
+  if (error) throw error;
+  return count ?? 0;
+}
 
 const RECIPE_SELECT = [
   'id',
@@ -94,12 +212,24 @@ export async function fetchDivisionRecipes(
       if (!fallback || fallback.length < BRACKET_SIZE) {
         throw new Error(`Not enough recipes for "${division.name}"`);
       }
-      return fallback.slice(0, BRACKET_SIZE).map(dbRowToRecipe);
+      return fallback.slice(0, BRACKET_SIZE).map((r) => dbRowToRecipe(r));
     }
     throw new Error(`Only found ${data?.length ?? 0} of ${BRACKET_SIZE} recipes for "${division.name}"`);
   }
 
-  return data.slice(0, BRACKET_SIZE).map(dbRowToRecipe);
+  return data.slice(0, BRACKET_SIZE).map((r) => dbRowToRecipe(r));
+}
+
+export async function fetchRecipesByIds(ids: string[]): Promise<Recipe[]> {
+  if (!ids.length) return [];
+  const { data, error } = await supabase
+    .from('recipes')
+    .select(RECIPE_SELECT)
+    .in('id', ids);
+  if (error) throw error;
+  // Preserve the original order from `ids`
+  const byId = new Map((data ?? []).map((r: any) => [r.id, dbRowToRecipe(r)]));
+  return ids.map((id) => byId.get(id)).filter((r): r is Recipe => !!r);
 }
 
 export async function fetchRecipeImageUrls(ids: string[]): Promise<string[]> {

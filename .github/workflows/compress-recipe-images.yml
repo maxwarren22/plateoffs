@@ -1,0 +1,30 @@
+name: Compress recipe images
+
+on:
+  schedule:
+    - cron: '0 13 * * *' # daily at 13:00 UTC
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Max images to process'
+        required: false
+        default: '100'
+
+jobs:
+  compress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js sharp
+
+      - name: Compress recipe images
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/compress-recipe-images.mjs "${{ github.event.inputs.limit || '100' }}"

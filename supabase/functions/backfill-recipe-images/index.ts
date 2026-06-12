@@ -1,6 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { GoogleGenAI } from 'npm:@google/genai@1.11.0'
-import sharp from 'npm:sharp'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -15,12 +14,8 @@ function nameToSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
-// Compress to webp — far smaller than raw Gemini PNG (2MB+ → ~100KB)
-const WEBP_QUALITY = 85
-const MAX_DIMENSION = 1024
-
-const BATCH_SIZE    = 5
-const DEFAULT_LIMIT = 20
+const BATCH_SIZE    = 2
+const DEFAULT_LIMIT = 5
 
 const BACKGROUNDS = [
   'rustic wooden table with fresh herbs scattered around, top-down view',
@@ -68,24 +63,11 @@ async function geminiImage(prompt: string): Promise<Uint8Array | null> {
   }
 }
 
-// ── Image compression ─────────────────────────────────────────────────────────
-
-async function compressImage(pngBytes: Uint8Array): Promise<Uint8Array> {
-  try {
-    const buffer = await sharp(pngBytes)
-      .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: WEBP_QUALITY })
-      .toBuffer()
-    const compressed = new Uint8Array(buffer)
-    console.log(`Compressed: ${pngBytes.length} bytes PNG → ${compressed.length} bytes webp`)
-    return compressed
-  } catch (err) {
-    console.error('Image compression failed, using original:', err)
-    return pngBytes
-  }
-}
-
 // ── Storage ───────────────────────────────────────────────────────────────────
+// NOTE: images are uploaded as raw PNG (~1.5-2MB). Compression (PNG → webp)
+// can't run here — sharp and WASM image libs (wasm-vips, jsquash) don't load
+// in the Supabase edge runtime (no FFI, no shared-memory WASM). A separate
+// scheduled job recompresses these to webp after upload.
 
 async function uploadImage(
   supabase: ReturnType<typeof createClient>,
@@ -93,10 +75,10 @@ async function uploadImage(
   recipeName: string,
   imageBytes: Uint8Array
 ): Promise<string | null> {
-  const path = `permanent/${nameToSlug(recipeName)}-${Date.now()}.webp`
+  const path = `permanent/${nameToSlug(recipeName)}-${Date.now()}.png`
   const { error } = await supabase.storage
     .from(IMAGE_BUCKET)
-    .upload(path, imageBytes, { contentType: 'image/webp', upsert: true })
+    .upload(path, imageBytes, { contentType: 'image/png', upsert: true })
   if (error) {
     console.error(`Image upload failed for ${recipeId}:`, error.message)
     return null
@@ -185,8 +167,7 @@ Deno.serve(async (req) => {
           const rawBytes = await geminiImage(buildImagePrompt(recipe.name))
           if (!rawBytes) { failed++; return }
 
-          const imageBytes = await compressImage(rawBytes)
-          const path = await uploadImage(supabase, recipe.id, recipe.name, imageBytes)
+          const path = await uploadImage(supabase, recipe.id, recipe.name, rawBytes)
           if (path) {
             await supabase.from('recipes').update({ image_path: path }).eq('id', recipe.id)
             succeeded++

@@ -345,7 +345,58 @@ The 8-minute buffer ensures `curate-scheduler` has time to run a full curation +
 
 ---
 
-## 7. Pre-Seeded Division Catalog
+## 7. Lobby Loading & Cover Image Caching
+
+### Strategy
+
+The lobby uses a **hybrid caching approach** to eliminate image load lag on every launch after the first:
+
+- **File system cache** (`expo-file-system/legacy`) — cover images are downloaded once and written to `{documentDirectory}/cover-images/`. On all subsequent launches, `ImageBackground` reads a local `file://` URI with no network request.
+- **Native HTTP cache warm** (`Image.prefetch`) — on a cache miss (first install or after a division rotates), the image is prefetched into the native HTTP cache *before* `loading: false` is set, so cards render with images already downloaded.
+- **Zustand persist** (`AsyncStorage`) — `divisions`, `rotationTimes`, and `coverImageUris` are persisted to AsyncStorage. On relaunch, the store rehydrates instantly before the user reaches the lobby, so no loading state is shown at all.
+
+### Data flow
+
+```
+App launch
+  └── useLobbyStore hydrates from AsyncStorage (~30ms)
+        ├── Has cached data → onFinishHydration calls refresh() silently
+        │     └── Lobby renders immediately with persisted divisions + local file:// URIs
+        │           └── refresh() quietly updates divisions + cover URIs in background
+        └── No cached data (first install) → onFinishHydration calls prefetch()
+              └── loading: true → skeleton cards displayed
+                    ├── DB fetch: divisions + rotation times
+                    └── resolveCoverImageUris():
+                          ├── Cache hit  → file:// URI, instant
+                          └── Cache miss → Image.prefetch() awaited (native HTTP cache),
+                                           file system download kicked off in background
+                    └── loading: false → lobby renders with images already in cache
+```
+
+### Key files
+
+| File | Role |
+|------|------|
+| `lib/coverImageCache.ts` | `getCachedCoverImageUri(url)` — returns local file:// or remote URL; `pruneOldCoverImages(activeUrls)` — cleans up stale files on refresh |
+| `store/lobby.ts` | Persist middleware + `_hydrated` guard; `resolveCoverImageUris()` awaits `Image.prefetch` on cache miss |
+| `app/index.tsx` | Calls `prefetch()` on mount so the process starts during the intro screen, not after navigation |
+
+### Division rotation & cache invalidation
+
+Cover images are keyed by a hash of `cover_image_url`. When a division rotates and its `cover_image_url` changes, the old file is an orphan and the new URL is a cache miss (triggers a fresh download). `pruneOldCoverImages()` is called on every `refresh()` to delete files for URLs no longer in the active division set.
+
+### First install vs. subsequent launches
+
+| Launch | Cover image source | Loading state shown? |
+|--------|--------------------|---------------------|
+| First install | Remote URL (Image.prefetch awaited) | Yes — skeleton cards |
+| All subsequent | Local `file://` URI (disk read ~5ms) | No |
+| After division rotates | Remote URL for rotated card only | No (other cards instant) |
+
+---
+
+## 8. Pre-Seeded Division Catalog
+
 
 ### Anchor Divisions (4, always active)
 
@@ -434,7 +485,96 @@ Rotation sequence determined by `display_order` (10–27):
 
 ---
 
-## 8. Implementation Checklist
+## 9. Multiplayer Vote Sessions
+
+### Overview
+
+Players can invite friends to vote on the same bracket in real time. No account required — identity is handled via Supabase Anonymous Auth (a stable UUID per device, silently assigned on first launch).
+
+### Entry Flow
+
+```
+Intro screen
+  ├── SOLO → lobby → matchup (existing flow, unchanged)
+  └── MULTIPLAYER → lobby (shows purple banner) → pick division
+        └── createVoteSession() → waiting room (session/[code].tsx)
+              ├── HOST: sees code + share button, waits for guests, taps START
+              └── GUEST: joins via deep link or manual code entry
+                    └── on session status → 'active': fetch recipes, init bracket, navigate to matchup
+```
+
+### Invite Links
+
+Share message includes `https://curatemyplate.com/plateoffs/session/[CODE]`.
+
+- **App installed** → iOS Universal Link intercepts, opens directly to `app/session/[code].tsx`
+- **App not installed** → landing page at `curatemyplate.com/plateoffs/session/[CODE]` shows code + App Store download link
+
+Universal Links configured via:
+- `ios.associatedDomains: ["applinks:curatemyplate.com"]` in `app.json`
+- `expo-router` plugin `headOrigin: "https://curatemyplate.com/plateoffs"`
+- `YP5S9646MA.com.curatemyplate.plateoffs` entry in `/public/apple-app-site-association` on the CMP website
+
+"Have a code?" entry on the intro screen for manual fallback.
+
+### Voting Flow (matchup screen)
+
+In multiplayer mode the matchup screen forks from solo:
+
+```
+User taps card
+  └── setPendingVoteRecipeId(recipeId)        ← card shows "YOUR VOTE" badge, other card dims
+        └── MultiplayerPanel: castSessionVote() → session_votes insert
+
+All clients subscribed to session_votes (Realtime)
+  └── vote tallies update live (dot pips + count on each card)
+
+HOST only — when all participants voted (or 45s timeout):
+  └── advanceVoteSession(sessionId, nextIndex)
+  └── supabase.channel.send broadcast { event: 'matchup_resolved', winnerRecipeId }
+
+All clients receive broadcast
+  └── selectWinner(winnerRecipe, side) → bracket advances → next matchup
+```
+
+### Database Schema (migration 007)
+
+```sql
+vote_sessions        — session state, code, recipe_ids[], status, current_matchup_index
+session_participants — voter_id per session (one row per device that joined)
+session_votes        — one row per (session, matchup_index, voter_id); UNIQUE constraint prevents double-voting
+```
+
+**Session code:** 4-char uppercase alphanumeric, generated by `generate_session_code()` SQL function. Characters exclude 0/O/1/I to avoid visual ambiguity.
+
+**Session lifecycle:** `waiting` → `active` (host taps START) → `complete` (final matchup resolved). Sessions expire after 24 hours via `expires_at` column + daily cron `expire-vote-sessions` (`0 4 * * *`).
+
+### RLS Summary
+
+All three tables require `authenticated` role (anonymous auth counts). Policies enforce:
+- Only host can update `vote_sessions`
+- Participants can only insert their own `voter_id`
+- Votes can only be inserted as yourself (`voter_id = auth.uid()`)
+- All reads are open to any authenticated user
+
+### Realtime Requirements
+
+Enable Realtime replication on `vote_sessions`, `session_participants`, and `session_votes` in the Supabase Dashboard → Database → Replication.
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `store/session.ts` | Mode, session state, vote tallies, myVotes per matchup |
+| `lib/supabase.ts` | `initAnonAuth`, `createVoteSession`, `joinVoteSession`, `castSessionVote`, `advanceVoteSession`, `fetchRecipesByIds` |
+| `app/session/[code].tsx` | Waiting room — host view (code + share + START) and guest view (join + wait) |
+| `components/MultiplayerPanel.tsx` | Live vote tallies, host timeout logic, Realtime broadcast listener |
+| `app/index.tsx` | SOLO / MULTIPLAYER mode buttons + "Have a code?" manual entry |
+| `app/lobby.tsx` | Reads `?mode=multiplayer`, forks to session creation after division pick |
+
+---
+
+## 10. Implementation Checklist
 
 ### Database & Catalog
 - [x] `division_catalog` with RLS
@@ -464,9 +604,22 @@ Rotation sequence determined by `display_order` (10–27):
 - [ ] Dietary profile preference UI (onboarding or settings)
 - [ ] `fetchDivisionRecipes()` applies `dietary_tags` filter
 
+### Multiplayer (migration 007)
+- [x] `vote_sessions`, `session_participants`, `session_votes` tables with RLS
+- [x] Supabase Anonymous Auth (`initAnonAuth` on startup)
+- [x] `createVoteSession`, `joinVoteSession`, `castSessionVote`, `advanceVoteSession`
+- [x] SOLO / MULTIPLAYER mode buttons on intro screen
+- [x] "Have a code?" manual entry on intro screen
+- [x] Waiting room screen (`app/session/[code].tsx`) — host + guest views
+- [x] Universal Links — `associatedDomains` in `app.json`, AASA updated on CMP website, landing page at `/plateoffs/session/:code`
+- [x] `MultiplayerPanel` — live vote tallies, host timeout (45s), Realtime broadcast
+- [x] Matchup screen — multiplayer fork, "YOUR VOTE" badge, card dimming
+- [ ] Supabase Dashboard: enable Realtime on `vote_sessions`, `session_participants`, `session_votes`
+- [ ] Supabase Dashboard: add cron `expire-vote-sessions` (`0 4 * * *`)
+
 ---
 
-## 9. Key Invariants
+## 10. Key Invariants
 
 - `EPOCH_ZERO` is immutable. Changing it shifts the entire rotation calendar.
 - **All epoch boundaries fall at midnight UTC.** Every interval (259200, 604800, 432000, 345600) is an exact multiple of 86 400 s. The hourly cron fires at midnight, so rotations happen within seconds of the epoch change. Midnight UTC = 7pm EST / 4pm PST — prime dinner-planning time for North American users.

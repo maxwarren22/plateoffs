@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { View, Text, TouchableOpacity, Linking, StyleSheet } from 'react-native';
 import { C } from '@/constants/colors';
+import { FeedbackModal } from '@/components/FeedbackModal';
 
 const TERMS_URL = 'https://curatemyplate.com/terms';
 const PRIVACY_URL = 'https://curatemyplate.com/privacy';
 
 export function AppFooter() {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+
   return (
     <View style={f.container}>
       <View style={f.links}>
@@ -15,8 +19,13 @@ export function AppFooter() {
         <TouchableOpacity onPress={() => Linking.openURL(TERMS_URL)} activeOpacity={0.7}>
           <Text style={f.link}>TERMS OF SERVICE</Text>
         </TouchableOpacity>
+        <Text style={f.dot}>·</Text>
+        <TouchableOpacity onPress={() => setFeedbackOpen(true)} activeOpacity={0.7}>
+          <Text style={f.link}>FEEDBACK</Text>
+        </TouchableOpacity>
       </View>
       <Text style={f.copy}>© {new Date().getFullYear()} CURATE MY PLATE</Text>
+      <FeedbackModal visible={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </View>
   );
 }

@@ -1,6 +1,12 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
+// Guard: true once setNotificationHandler has successfully completed.
+// All other notification API calls check this flag and return safe defaults
+// if the handler isn't ready yet — prevents NSException crashes on iPad where
+// the lobby mounts and calls notification APIs before the 500ms init defer elapses.
+let _notificationsReady = false;
+
 export function initNotificationHandler(): void {
   if (Platform.OS === 'web') return;
   try {
@@ -13,6 +19,7 @@ export function initNotificationHandler(): void {
         shouldShowList: true,
       }),
     });
+    _notificationsReady = true;
   } catch {
     // expo-notifications not available on this platform/OS version
   }
@@ -65,19 +72,32 @@ function pickMessage(seed: number) {
   return ROTATION_MESSAGES[seed % ROTATION_MESSAGES.length];
 }
 
+export async function getNotificationPermissionStatus(): Promise<'granted' | 'denied' | 'undetermined'> {
+  if (Platform.OS === 'web' || !_notificationsReady) return 'denied';
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    return status;
+  } catch {
+    return 'denied';
+  }
+}
+
 export async function requestNotificationPermission(): Promise<boolean> {
-  if (Platform.OS === 'web') return false;
-
-  const { status: existing } = await Notifications.getPermissionsAsync();
-  if (existing === 'granted') return true;
-
-  const { status } = await Notifications.requestPermissionsAsync();
-  return status === 'granted';
+  if (Platform.OS === 'web' || !_notificationsReady) return false;
+  try {
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    if (existing === 'granted') return true;
+    const { status } = await Notifications.requestPermissionsAsync();
+    return status === 'granted';
+  } catch {
+    return false;
+  }
 }
 
 export async function scheduleRotationNotifications(
   rotationTimes: { slot: string; name: string; rotatesAt: number }[]
 ): Promise<void> {
+  if (!_notificationsReady) return;
   // Cancel previously scheduled rotation notifications before rescheduling
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
   const rotationIds = scheduled
