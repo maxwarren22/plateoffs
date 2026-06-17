@@ -28,33 +28,20 @@ function nameToSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
-// LIKE '%.png' can't use an index and times out on the full table, so
-// filter on the indexed (source, image_path not null) pair first, then
-// narrow to .png client-side. PostgREST caps each request at 1000 rows,
-// so page through with .range() until we have enough PNGs or run out.
-const PAGE_SIZE = 1000
-let pngCandidates = []
-for (let page = 0; pngCandidates.length < LIMIT; page++) {
-  const from = page * PAGE_SIZE
-  const to = from + PAGE_SIZE - 1
-  const { data, error } = await supabase
-    .from('recipes')
-    .select('id, name, image_path')
-    .eq('source', 'ai')
-    .not('image_path', 'is', null)
-    .range(from, to)
+const { data, error } = await supabase
+  .from('recipes')
+  .select('id, name, image_path')
+  .eq('source', 'ai')
+  .not('image_path', 'is', null)
+  .ilike('image_path', '%.png')
+  .limit(LIMIT)
 
-  if (error) {
-    console.error('Recipes fetch error:', error.message)
-    process.exit(1)
-  }
-
-  pngCandidates.push(...data.filter(r => r.image_path.endsWith('.png')))
-
-  if (data.length < PAGE_SIZE) break // last page
+if (error) {
+  console.error('Recipes fetch error:', error.message)
+  process.exit(1)
 }
 
-const recipes = pngCandidates.slice(0, LIMIT)
+const recipes = data
 
 if (!recipes.length) {
   console.log('No PNG recipe images to compress.')
