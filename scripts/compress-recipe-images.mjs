@@ -28,9 +28,10 @@ function nameToSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
+// !inner scopes to only recipes that are in division_recipe_bank (Plateoffs-linked)
 const { data, error } = await supabase
   .from('recipes')
-  .select('id, name, image_path')
+  .select('id, name, image_path, division_recipe_bank!inner(recipe_id)')
   .eq('source', 'ai')
   .not('image_path', 'is', null)
   .ilike('image_path', '%.png')
@@ -44,11 +45,11 @@ if (error) {
 const recipes = data
 
 if (!recipes.length) {
-  console.log('No PNG recipe images to compress.')
+  console.log('No PNG recipe images to compress (Plateoffs division recipes only).')
   process.exit(0)
 }
 
-console.log(`Compressing ${recipes.length} recipe image(s)...\n`)
+console.log(`Found ${recipes.length} Plateoffs division recipe(s) with PNG images to compress.\n`)
 
 let succeeded = 0
 let failed = 0
