@@ -28,10 +28,27 @@ function nameToSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
-// !inner scopes to only recipes that are in division_recipe_bank (Plateoffs-linked)
+// Step 1: fetch recipe IDs scoped to Plateoffs divisions (fast, no join on recipes)
+const { data: divisionRows, error: divError } = await supabase
+  .from('division_recipe_bank')
+  .select('recipe_id')
+
+if (divError) {
+  console.error('division_recipe_bank fetch error:', divError.message)
+  process.exit(1)
+}
+
+const divisionRecipeIds = divisionRows.map(r => r.recipe_id)
+if (!divisionRecipeIds.length) {
+  console.log('No recipes in division_recipe_bank.')
+  process.exit(0)
+}
+
+// Step 2: query recipes without the cross-table join to avoid statement timeout
 const { data, error } = await supabase
   .from('recipes')
-  .select('id, name, image_path, division_recipe_bank!inner(recipe_id)')
+  .select('id, name, image_path')
+  .in('id', divisionRecipeIds)
   .eq('source', 'ai')
   .not('image_path', 'is', null)
   .ilike('image_path', '%.png')
